@@ -15,7 +15,7 @@ process.umask(0o077);
 const program = new Command().name('acadence').description('Manage Claude Code and Codex usage windows').version('0.1.0');
 const configDir = join(homedir(), '.config', 'acadence');
 const configFile = join(configDir, 'client.json');
-const production = 'https://acadance.daniil.online';
+const production = 'https://acadence.daniil.online';
 const configSchema = z.object({ token: z.string().length(43), url: z.string().url() });
 type Config = z.infer<typeof configSchema>;
 function validateUrl(value: string): string {

@@ -7,7 +7,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { anchorSchema, timezoneSchema, type Provider, type Schedule } from './domain.js';
-import { cleanEnvironment, parseCredentials, runProcess } from './providers.js';
+import { claudeAccountEmail, cleanEnvironment, parseCredentials, runProcess } from './providers.js';
 
 process.umask(0o077);
 const program = new Command().name('acadence').description('Manage Claude Code and Codex usage windows').version('0.1.0');
@@ -65,7 +65,9 @@ async function credentials(provider: Provider, consume: (data: unknown) => Promi
       const suffix = createHash('sha256').update(dir).digest('hex').slice(0, 8);
       raw = await runProcess('security', ['find-generic-password', '-s', `Claude Code-credentials-${suffix}`, '-w'], cleanEnvironment(home), home);
     }
-    await consume(parseCredentials(provider, JSON.parse(raw)));
+    const data = parseCredentials(provider, JSON.parse(raw));
+    if ('claudeAiOauth' in data) data.email = await claudeAccountEmail(home);
+    await consume(data);
   } finally {
     if (provider === 'claude' && process.platform === 'darwin') {
       const suffix = createHash('sha256').update(dir).digest('hex').slice(0, 8);
@@ -114,7 +116,7 @@ async function showAccounts() {
   const rows = await request('/v1/accounts');
   if (!rows.length) { console.log('No accounts connected'); return; }
   for (const row of rows) {
-    console.log(`${row.id}  ${row.provider} / ${row.label}  ${row.status}${row.lastError ? ` (${row.lastError})` : ''}`);
+    console.log(`${row.id}  ${row.provider} / ${row.label}${row.email ? ` <${row.email}>` : ''}  ${row.status}${row.lastError ? ` (${row.lastError})` : ''}`);
     if (!row.limits.length) console.log('  Limits not detected yet');
     for (const limit of row.limits) console.log(`  ${limit.kind}: ${limit.used}% used; resets ${limit.resetsAt ? new Date(limit.resetsAt).toLocaleString() : 'not active'}; checked ${new Date(limit.sampledAt).toLocaleString()}`);
     if (row.pending.length) console.log(`  ${row.pending.length} pending operation(s)`);

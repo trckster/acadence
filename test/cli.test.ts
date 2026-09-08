@@ -38,7 +38,9 @@ test('usage shows all owned accounts and stored windows, including unavailable u
       ['foreign', 'other', 'codex', 'private-other-user', 'active', null]
     ]) {
       store.run('INSERT INTO accounts(id,user_id,provider,label,status,last_error,credentials) VALUES(?,?,?,?,?,?,?)',
-        id!, user!, provider!, label!, status!, error!, 'credential-must-not-appear');
+        id!, user!, provider!, label!, status!, error!, vault.seal(provider === 'claude'
+          ? { claudeAiOauth: {}, email: 'work@example.com' }
+          : { tokens: { id_token: id === 'personal' ? `header.${Buffer.from(JSON.stringify({ email: 'personal@example.com' })).toString('base64url')}.signature` : 'unavailable' } }, id!));
     }
     const sampledAt = Date.parse('2026-09-08T12:00:00Z');
     const resetsAt = Date.parse('2026-09-08T17:00:00Z');
@@ -52,10 +54,10 @@ test('usage shows all owned accounts and stored windows, including unavailable u
       store.run('INSERT INTO windows(account_id,kind,used,resets_at,sampled_at,present) VALUES(?,?,?,?,?,?)', id, kind, used, reset, sampledAt, present);
     }
     const output = await cli();
-    assert.match(output, /personal  codex \/ personal  active/);
+    assert.match(output, /personal  codex \/ personal <personal@example.com>  active/);
     assert.match(output, /five_hour: 25% used; resets .+; checked .+/);
     assert.match(output, /weekly: 42\.5% used; resets not active; checked .+/);
-    assert.match(output, /work  claude \/ work  reauth_required \(auth\)/);
+    assert.match(output, /work  claude \/ work <work@example.com>  reauth_required \(auth\)/);
     assert.match(output, /weekly: 100% used/);
     assert.match(output, /new  codex \/ new  active\n  Limits not detected yet/);
     assert.doesNotMatch(output, /private-other-user|88%|99%|credential-must-not-appear/);

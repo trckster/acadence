@@ -28,6 +28,8 @@ The API defaults to `https://acadance.daniil.online`. Sign-in opens Telegram; ap
 
 `acadence usage` shows the last recorded usage for every connected account belonging to the signed-in user: account status, five-hour and weekly usage percentages where available, reset times, and when each reading was checked. Accounts without readings are also listed. Usage is checked by the server hourly and shortly after openings; this command displays stored readings without requesting a fresh provider check.
 
+Both `usage` and `accounts list` show the account email when available, for example `ACCOUNT_ID  codex / personal <you@example.com>  active`. Codex emails come from the saved sign-in token; Claude emails are captured from `claude auth status` during connection or reauthentication. Reauthenticate an existing Claude account to capture its email. Labels and account IDs remain available when an email cannot be detected; account commands still use the ID, since multiple accounts can share an email.
+
 Account connection runs the official provider login in a separate temporary profile and transfers credentials over HTTPS without printing tokens or changing your existing provider login. The CLI token is stored with mode 0600 in `~/.config/acadence/client.json`. Server credentials use AES-256-GCM; refreshed credentials remain on the server. Tokens expire after one year; `logout --all` revokes all CLI sessions.
 
 ## Scheduling

@@ -3,7 +3,22 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { Providers, type Credentials } from '../src/providers.js';
+import { claudeAccountEmail, Providers, type Credentials } from '../src/providers.js';
+
+test('Claude email discovery uses isolated auth status and tolerates unavailable metadata', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'acadence-email-test-'));
+  const previousPath = process.env.PATH;
+  try {
+    process.env.PATH = `${dir}:${previousPath}`;
+    await writeFile(join(dir, 'claude'), `#!/usr/bin/env node
+if (process.argv.slice(2).join(' ') !== 'auth status --json' || process.env.CLAUDE_CONFIG_DIR !== process.env.HOME + '/.claude') process.exit(2);
+process.stdout.write(JSON.stringify({ loggedIn: true, email: 'claude@example.com' }));
+`, { mode: 0o700 });
+    assert.equal(await claudeAccountEmail(dir), 'claude@example.com');
+    await writeFile(join(dir, 'claude'), '#!/usr/bin/env node\nprocess.stdout.write("invalid-json");\n', { mode: 0o700 });
+    assert.equal(await claudeAccountEmail(dir), undefined);
+  } finally { process.env.PATH = previousPath; await rm(dir, { recursive: true, force: true }); }
+});
 
 const codex = { auth_mode: 'chatgpt' as const, tokens: { access_token: 'test-access', refresh_token: 'test-refresh', id_token: 'test-id' } };
 test('Codex subprocess performs RPC initialization, waits for completion and saves rotated credentials', async () => {
@@ -73,11 +88,12 @@ test('Claude refreshes on 401 and persists rotation before retrying quota lookup
       assert.equal(saved.length, 1);
       return new Response(JSON.stringify({ five_hour: { utilization: 0, resets_at: null }, seven_day: null }), { status: 200 });
     };
-    const credentials = { claudeAiOauth: { accessToken: 'original', refreshToken: 'original-refresh', expiresAt: Date.now() + 3600000, scopes: ['user:profile','user:inference'] } };
+    const credentials = { email: 'claude@example.com', claudeAiOauth: { accessToken: 'original', refreshToken: 'original-refresh', expiresAt: Date.now() + 3600000, scopes: ['user:profile','user:inference'] } };
     const result = await new Providers().execute('claude', credentials, 'poll', data => saved.push(data));
     assert.equal(result!.windows[0]!.kind, 'five_hour');
     assert.equal(requests, 3);
     assert.equal((saved.at(-1) as typeof credentials).claudeAiOauth.refreshToken, 'rotated-refresh');
+    assert.equal((saved.at(-1) as typeof credentials).email, 'claude@example.com');
   } finally { globalThis.fetch = originalFetch; }
 });
 test('missing provider executable fails promptly without leaking an unresolved process wait', async () => {

@@ -21,4 +21,3 @@ A release is complete only after the published artifact and installation have be
 These are one-time fixes, separate from the recurring release procedure:
 
 - The CLI hardcodes its version separately from `package.json`. Use a single version source; until then, update both together.
-- The container smoke check still uses the removed `--version` flag. Update it to invoke the CLI without arguments before the next release.

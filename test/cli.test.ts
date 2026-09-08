@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, writeFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Store } from '../src/db.js';
@@ -22,13 +22,14 @@ async function runCli(args: string[], env: NodeJS.ProcessEnv, input = ''): Promi
 }
 
 test('help commands work at every level and removed commands and flags are rejected', async () => {
+  assert.equal((await runCli([], process.env)).trim(), JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version);
   for (const path of [[], ['accounts'], ['accounts', 'disconnect'], ['schedule', 'add']]) {
     const output = await runCli(['help', ...path], process.env);
     assert.match(output, /Usage: acadence/);
-    assert.doesNotMatch(output, /--help|\bupdate\b|<account>|<id>/);
+    assert.doesNotMatch(output, /--help|--version|\bOptions:|\bupdate\b|<account>|<id>/);
   }
   assert.match(await runCli(['accounts', 'help', 'reauth'], process.env), /Choose an account/);
-  for (const args of [['usage'], ['schedule', 'update', '06:00', '07:00'], ['help', 'missing'],
+  for (const args of [['--version'], ['-V'], ['usage'], ['schedule', 'update', '06:00', '07:00'], ['help', 'missing'],
     ...[[], ['accounts'], ['accounts', 'disconnect'], ['schedule', 'add'], ['help']].flatMap(path => ['--help', '-h'].map(flag => [...path, flag]))]) {
     await assert.rejects(runCli(args, process.env), /unknown (?:command|option)|Unknown command/);
   }
@@ -88,7 +89,7 @@ test('accounts list fetches owned accounts and never displays stale windows', as
     assert.match(output, /5h: 30% used; resets 2030-09-08 17:00/);
     assert.match(output, /Week: 45% used; resets not active/);
     assert.doesNotMatch(output, /\b(?:AM|PM|checked)\b/);
-    assert.match(output, /claude \/ work: work@example.com\n    reauth required \(auth\)/);
+    assert.match(output, /claude \/ work: work@example.com\n    reauth required \(authentication expired or rejected; run acadence accounts reauth\)/);
     assert.match(output, /Usage unavailable: reauthentication required/);
     assert.match(output, /codex \/ new: email unavailable\n    active\n    5h: usage unavailable\n    Week: usage unavailable/);
     assert.doesNotMatch(output, /private-other-user|25%|42\.5%|100%|88%|99%|credential-must-not-appear/);
@@ -180,4 +181,45 @@ fs.writeFileSync(process.env.CODEX_HOME + '/auth.json', JSON.stringify({auth_mod
     await cli('logout','--all');
     assert.equal(store.all('SELECT * FROM tokens').length, 0);
   } finally { await app.close(); store.close(); await rm(home, { recursive: true, force: true }); }
+});
+
+test('CLI request errors show destination, status and cause, including usage refresh failures', async () => {
+  const { createServer } = await import('node:http');
+  const home = await mkdtemp(join(tmpdir(), 'acadence-errors-test-'));
+  let status = 502;
+  let body = '<html>upstream-private-detail</html>';
+  const server = createServer((request, response) => {
+    if (request.url === '/v1/accounts') {
+      response.end(JSON.stringify([{ id: 'test', provider: 'claude', label: 'test', status: 'active', pending: [] }]));
+    } else { response.writeHead(status); response.end(body); }
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}`;
+  const env = { ...process.env, HOME: home };
+  try {
+    await assert.rejects(runCli(['login', '--api', url], env), error => {
+      assert.ok(error instanceof Error);
+      assert.ok(error.message.includes(`POST ${url}/v1/auth/device: HTTP 502; expected a JSON response`));
+      assert.doesNotMatch(error.message, /upstream-private-detail/);
+      return true;
+    });
+    status = 401; body = JSON.stringify({ error: 'Sign in with acadence login' });
+    await assert.rejects(runCli(['login', '--api', url], env), /HTTP 401; Sign in with acadence login/);
+    status = 503; body = JSON.stringify({ error: 'credential secret-value' });
+    await assert.rejects(runCli(['login', '--api', url], env), error => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /HTTP 503/);
+      assert.doesNotMatch(error.message, /secret-value/);
+      return true;
+    });
+    const dir = join(home, '.config', 'acadence');
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'client.json'), JSON.stringify({ url, token: 'a'.repeat(43) }));
+    assert.match(await runCli(['accounts', 'list'], env), /Usage unavailable: POST http:\/\/127\.0\.0\.1:\d+\/v1\/accounts\/test\/usage: HTTP 503/);
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await assert.rejects(runCli(['login', '--api', url], env), /POST http:\/\/127\.0\.0\.1:\d+\/v1\/auth\/device: connection refused \(ECONNREFUSED\)/);
+  } finally {
+    server.close();
+    await rm(home, { recursive: true, force: true });
+  }
 });

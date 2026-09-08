@@ -1,3 +1,4 @@
+import { RequestError } from './errors.js';
 import { resolve } from 'node:path';
 import { lock } from 'proper-lockfile';
 import { z } from 'zod';
@@ -56,4 +57,4 @@ async function main() {
   process.once('SIGTERM', () => { void stop().then(() => process.exit(0)); });
   process.once('SIGINT', () => { void stop().then(() => process.exit(0)); });
 }
-main().catch(() => { console.error('Startup failed: check configuration, encryption key, database lock, and Telegram connectivity.'); process.exit(1); });
+main().catch(error => { console.error(error instanceof RequestError ? `Startup failed: ${error.message}` : 'Startup failed: check configuration, encryption key, database lock, and Telegram connectivity.'); process.exit(1); });

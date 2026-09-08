@@ -1,88 +1,29 @@
 # Acadence
 
-Multi-user Claude Code and Codex usage-window scheduler. TypeScript, SQLite, a globally installable CLI, and one shared Telegram bot. Each user has multiple accounts and one timezone/schedule.
+Schedule Claude Code and Codex usage windows from your terminal, with updates in Telegram.
 
-## Install and use
+## Features
 
-Requires Node.js 24+, npm, Telegram, and the official `claude`/`codex` CLI for the accounts you connect.
+- **Multiple accounts** — Manage Claude Code and Codex accounts in one place.
+- **Daily schedule** — Start usage windows automatically at your preferred times.
+- **Usage tracking** — Check current usage and reset times for each account.
+- **Telegram updates** — Get notified about resets, expiring usage windows, and account issues.
+
+## Get started
+
+Requires Node.js 24+, npm, Telegram, and the official Claude Code or Codex CLI for the accounts you connect.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/trckster/acadence/master/scripts/install.sh | bash
-acadence login
-acadence accounts connect codex --label personal
-acadence accounts connect claude --label work
-acadence accounts list
-acadence schedule add 06:00
-acadence schedule add 13:00
-acadence schedule remove 13:00
-acadence schedule show
-acadence trigger
-acadence accounts reauth
-acadence accounts disconnect
-acadence logout --all
 ```
 
-The API defaults to `https://acadence.daniil.online`. Sign-in opens Telegram; approve only a sign-in you initiated. First login stores the detected system timezone. Change it with `acadence schedule timezone Europe/Rome`. `login --api https://your-host` supports self-hosting.
-
-`acadence accounts list` fetches current usage from each connected account before displaying it. Each account shows its status, five-hour and weekly usage percentages where available, and reset times. Accounts are refreshed in batches of up to four; provider checks can take a few seconds. If a provider fails, authentication has expired, or server operations are busy, that account shows an explicit usage-unavailable reason instead of an old reading. Other accounts still display their successful results.
-
-`accounts list` identifies accounts by provider, label, and email:
-
-```text
-codex / personal: you@example.com
-    active
-    5h: 25% used; resets in 2h 3m
-    Week: 42.5% used; resets 2026-09-14 09:00
-```
-
-Timestamps always use `YYYY-MM-DD HH:mm` with a 24-hour clock in the client's timezone. Future resets less than 24 hours away show remaining hours and minutes instead (or `in less than 1m`). Missing email or quota readings are marked unavailable. Codex emails come from the saved sign-in token; Claude emails are captured from `claude auth status` during connection or reauthentication. Reauthenticate an existing Claude account to capture its email.
-
-`accounts reauth` and `accounts disconnect` always show an account chooser, including when only one account is connected. Choose a number from the provider, label, and email list, or press Enter to cancel. They take no account arguments or selection flags; internal account IDs are not displayed.
-
-Use `acadence help` or `acadence help accounts disconnect` for help. Command groups also support help, such as `acadence accounts help`. The `--help` and `-h` flags are not supported. To change a scheduled time, remove the old time and add the new one.
-
-Account connection runs the official provider login in a separate temporary profile and transfers credentials over HTTPS without printing tokens or changing your existing provider login. The CLI token is stored with mode 0600 in `~/.config/acadence/client.json`. Server credentials use AES-256-GCM; refreshed credentials remain on the server. Tokens expire after one year; `logout --all` revokes all CLI sessions.
-
-## Scheduling
-
-Anchors run daily in the user's timezone; continuations run every five elapsed hours, only when the next anchor is at least five hours away. With `06:00`, openings are `06:00, 11:00, 16:00, 21:00`, then next day's `06:00`. With `06:00, 13:00`, they are `06:00, 13:00, 18:00, 23:00`. DST gaps shift an anchor forward; repeated times run once, at the earlier occurrence. Anchors missed by more than 90 seconds during downtime are skipped.
-
-Accounts are checked hourly and shortly after openings. Codex windows are identified by duration, including weekly-only plans. Resets require changed provider state: an advanced reset timestamp or restored quota. A weekly reset opens immediately; a five-hour reset waits if an anchor is less than five hours away. Telegram reports resets, approaching expiration, and repeated failures. Failed openings retry after a minute; SQLite preserves retries and notification deduplication across restarts. A crash after a provider accepts a request or Telegram accepts a message can cause one duplicate on recovery, because neither offers an end-to-end idempotency guarantee here.
-
-## Run and deploy
+Sign in through Telegram, connect an account, and set a daily start time:
 
 ```bash
-npm ci
-npm test
-npm run build
-cp .env.example .env
-openssl rand -base64 32
+acadence login
+acadence accounts connect codex --label personal
+acadence schedule add 06:00
+acadence accounts list
 ```
 
-Put the generated value in `ENCRYPTION_KEY` and your dedicated BotFather token in `TELEGRAM_BOT_TOKEN`. Keep the encryption key stable and backed up separately; changing it makes stored accounts unreadable. The bot must have no webhook configured. For local development, export these variables, set `DATABASE_PATH=./data/acadence.sqlite`, and run `npm start`; connect with `acadence login --api http://localhost:3000`.
-
-In Coolify, add this Git repository as a **Docker Compose** application using `docker-compose.yml`. Set both required secrets, and assign `https://acadence.daniil.online:3000` to the `acadence` service (Coolify terminates HTTPS on port 443). Point DNS at Coolify. Deploy **one replica**, with overlapping/rolling deployments disabled. The service runs as non-root, restarts unless stopped, and exposes `/health`. The named volume `acadence-data` persists `/data`, including SQLite WAL state; never delete it during redeploys. Back up the volume while the service is stopped, together with a separately secured copy of the encryption key.
-
-Optional variables: `WORKER_CONCURRENCY` (default 4), `CODEX_MODEL`, `CLAUDE_MODEL` (otherwise provider defaults). The image pins provider CLI versions; update and test the Docker build arguments when upgrading. Container temporary credentials live on tmpfs and are removed after each operation.
-
-### Automatic Coolify redeployment
-
-GitHub sends push events directly to Coolify through a repository webhook. Coolify deploys updates to the application's configured source branch (`master`), including merged pull requests. Deployment starts independently of GitHub Actions CI and does not wait for its checks.
-
-In Coolify, set the application's source branch to `master` and enable **Advanced → Auto Deploy**. Under **Webhook → Manual Git webhooks → GitHub**, copy the webhook URL and webhook secret.
-
-In the GitHub repository's **Settings → Webhooks**, configure an active webhook with:
-
-- **Payload URL**: the Coolify manual GitHub webhook URL (`https://cool.daniil.online/webhooks/source/github/events/manual`).
-- **Content type**: `application/x-www-form-urlencoded` (matching Termorize's setup).
-- **Secret**: the GitHub webhook secret from Coolify.
-- **SSL verification**: enabled.
-- **Events**: just the `push` event.
-
-No Coolify API token or GitHub Actions deployment secrets are required. Check **Recent Deliveries** in GitHub for webhook errors and monitor deployment progress and application health in Coolify. See the [Coolify automatic deployment guide](https://coolify.io/docs/applications/ci-cd/github/auto-deploy).
-
-## Provider support boundary
-
-Codex uses the official [app-server quota interface](https://learn.chatgpt.com/docs/app-server) and [headless credential transfer](https://learn.chatgpt.com/docs/auth). Claude quota polling uses the undocumented `/api/oauth/usage` response used by Claude Code; inference runs the unmodified CLI. Unknown quota formats raise an alert instead of guessing. Live authentication/inference requires your accounts; automated tests use provider fixtures.
-
-Claude's current [credential rules](https://code.claude.com/docs/en/legal-and-compliance) restrict third-party collection/storage of Claude.ai credentials. The requested central credential-transfer design therefore needs Anthropic's authorization before offering Claude integration as a public service. Shipping this adapter does not establish that authorization or guarantee continued endpoint availability.
+Use `claude` instead of `codex` to connect a Claude Code account. Run `acadence help` for all commands.

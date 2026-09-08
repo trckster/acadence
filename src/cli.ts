@@ -10,9 +10,10 @@ import { z } from 'zod';
 import { anchorSchema, timezoneSchema, type Provider, type Schedule } from './domain.js';
 import { claudeAccountEmail, cleanEnvironment, parseCredentials, runProcess } from './providers.js';
 import { formatReset } from './format.js';
+import { fetchWithContext, responseJson, requestTarget, RequestError, formatError, providerErrorMessage } from './errors.js';
 
 process.umask(0o077);
-const program = new Command().name('acadence').description('Manage Claude Code and Codex usage windows').version('0.1.0');
+const program = new Command().name('acadence').description('Manage Claude Code and Codex usage windows');
 const configDir = join(homedir(), '.config', 'acadence');
 const configFile = join(configDir, 'client.json');
 const production = 'https://acadence.daniil.online';
@@ -30,12 +31,16 @@ async function config(): Promise<Config> {
 }
 async function request(path: string, method = 'GET', body?: unknown, auth?: Config, timeout = 30_000) {
   const current = auth ?? await config();
-  const response = await fetch(validateUrl(current.url) + path, {
+  const url = validateUrl(current.url) + path;
+  const response = await fetchWithContext(url, {
     method, headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(current.token ? { authorization: `Bearer ${current.token}` } : {}) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: 'error', signal: AbortSignal.timeout(timeout)
   });
-  const result = await response.json() as any;
-  if (!response.ok) throw new Error(typeof result.error === 'string' ? result.error : `Request failed (${response.status})`);
+  const result = await responseJson(response, url, method);
+  if (!response.ok) {
+    const detail = typeof result?.error === 'string' ? `; ${formatError(new Error(result.error)).replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').slice(0, 500)}` : '';
+    throw new RequestError(`${requestTarget(url, method)}: HTTP ${response.status}${detail}`);
+  }
   return result;
 }
 function browser(url: string) {
@@ -121,8 +126,8 @@ async function showAccounts() {
       row.limits = [];
       try {
         Object.assign(row, await request(`/v1/accounts/${encodeURIComponent(row.id)}/usage`, 'POST', {}, undefined, 120_000));
-      } catch {
-        row.refreshError = 'refresh failed; retry shortly';
+      } catch (error) {
+        row.refreshError = formatError(error);
       }
     }));
   }
@@ -131,8 +136,8 @@ async function showAccounts() {
   for (const row of rows) {
     if (row !== rows[0]) console.log();
     console.log(`${row.provider} / ${row.label}: ${row.email ?? 'email unavailable'}`);
-    console.log(`    ${row.status.replaceAll('_', ' ')}${row.lastError ? ` (${row.lastError})` : ''}`);
-    if (row.refreshError) console.log(`    Usage unavailable: ${row.refreshError}`);
+    console.log(`    ${row.status.replaceAll('_', ' ')}${row.lastError ? ` (${providerErrorMessage(row.lastError)})` : ''}`);
+    if (row.refreshError) console.log(`    Usage unavailable: ${providerErrorMessage(row.refreshError)}`);
     for (const [kind, label] of [['five_hour', '5h'], ['weekly', 'Week']]) {
       const limit = row.limits.find((item: any) => item.kind === kind);
       console.log(limit
@@ -208,7 +213,8 @@ function configureHelp(command: Command) {
     });
 }
 configureHelp(program);
-program.parseAsync().catch(error => {
-  console.error(error instanceof z.ZodError ? 'Invalid input or unsupported provider credential format' : error instanceof Error && !/token|secret|credential/i.test(error.message) ? error.message : 'Operation failed; check your sign-in and connection');
+if (process.argv.length === 2) console.log(JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version);
+else program.parseAsync().catch(error => {
+  console.error(error instanceof z.ZodError ? 'Invalid input or unsupported provider credential format' : formatError(error));
   process.exitCode = 1;
 });

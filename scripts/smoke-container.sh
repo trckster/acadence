@@ -4,7 +4,7 @@ acadence_image=${1:-acadence:local}
 acadence_volume="acadence-smoke-$(date +%s)-$$"
 docker volume create "$acadence_volume" >/dev/null
 trap 'docker volume rm "$acadence_volume" >/dev/null' EXIT
-docker run --rm --read-only --tmpfs /tmp:rw,nosuid,nodev,size=512m,mode=1777 --cap-drop ALL --security-opt no-new-privileges:true --entrypoint sh "$acadence_image" -c 'codex --version && claude --version && node dist/cli.js --version'
+docker run --rm --read-only --tmpfs /tmp:rw,nosuid,nodev,size=512m,mode=1777 --cap-drop ALL --security-opt no-new-privileges:true --entrypoint sh "$acadence_image" -c 'codex --version && claude --version && node dist/cli.js'
 docker run --rm -i --read-only --tmpfs /tmp --mount "source=$acadence_volume,target=/data" --cap-drop ALL --security-opt no-new-privileges:true --entrypoint node "$acadence_image" --input-type=module <<'JS'
 import assert from 'node:assert/strict';
 import { lock } from 'proper-lockfile';

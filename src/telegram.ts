@@ -1,16 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { Store, type User } from './db.js';
+import { fetchWithContext, responseJson, requestTarget, RequestError } from './errors.js';
 import { hash } from './security.js';
 
 export type TelegramApi = (method: string, data: object) => Promise<any>;
 export function telegramApi(token: string): TelegramApi {
   return async (method, data) => {
-    const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    const url = `https://api.telegram.org/bot${token}/${method}`;
+    const response = await fetchWithContext(url, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data),
       signal: AbortSignal.timeout(35_000), redirect: 'error'
     });
-    const result = await response.json() as { ok: boolean; result: unknown };
-    if (!response.ok || !result.ok) throw new Error('Telegram request failed');
+    const result = await responseJson(response, url, 'POST');
+    if (!response.ok || !result?.ok) throw new RequestError(`${requestTarget(url, 'POST')}: HTTP ${response.status}; Telegram request rejected`);
     return result.result;
   };
 }

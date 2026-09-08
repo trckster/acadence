@@ -65,6 +65,17 @@ In Coolify, add this Git repository as a **Docker Compose** application using `d
 
 Optional variables: `WORKER_CONCURRENCY` (default 4), `CODEX_MODEL`, `CLAUDE_MODEL` (otherwise provider defaults). The image pins provider CLI versions; update and test the Docker build arguments when upgrading. Container temporary credentials live on tmpfs and are removed after each operation.
 
+### Automatic Coolify redeployment
+
+The GitHub Actions CI workflow triggers a Coolify redeployment after all checks pass for a push to `master`, including merged pull requests. Pull request builds, tags, and pushes to other branches do not deploy.
+
+Configure the Coolify application's source branch as `master` and disable Coolify's automatic Git push deployments so deployment waits for CI. Add these repository secrets under **Settings → Secrets and variables → Actions**:
+
+- `COOLIFY_WEBHOOK`: the application's **Webhook → Deploy webhook** URL, such as `https://coolify.example.com/api/v1/deploy?uuid=APPLICATION_UUID`. Remove any existing `force` query parameter; the workflow adds `force=true` to rebuild without cache. The URL must be reachable from GitHub-hosted runners.
+- `COOLIFY_TOKEN`: a Coolify API token created under **Keys & Tokens → API tokens** with **Deploy** permission.
+
+See the [Coolify GitHub Actions setup](https://coolify.io/docs/applications/ci-cd/github/actions/). Missing secrets, connection failures, and HTTP errors fail the deploy job. A successful job means Coolify accepted the deployment request; monitor the rollout and application health in Coolify.
+
 ## Provider support boundary
 
 Codex uses the official [app-server quota interface](https://learn.chatgpt.com/docs/app-server) and [headless credential transfer](https://learn.chatgpt.com/docs/auth). Claude quota polling uses the undocumented `/api/oauth/usage` response used by Claude Code; inference runs the unmodified CLI. Unknown quota formats raise an alert instead of guessing. Live authentication/inference requires your accounts; automated tests use provider fixtures.

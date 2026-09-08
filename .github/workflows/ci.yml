@@ -20,3 +20,28 @@ jobs:
       - run: npm pack
       - run: docker build -t acadence:test .
       - run: bash scripts/smoke-container.sh acadence:test
+  deploy:
+    name: Redeploy on Coolify
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    concurrency:
+      group: coolify-production
+      cancel-in-progress: false
+    steps:
+      - name: Trigger forced redeployment
+        env:
+          COOLIFY_WEBHOOK: ${{ secrets.COOLIFY_WEBHOOK }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: |
+          if [[ -z "$COOLIFY_WEBHOOK" || -z "$COOLIFY_TOKEN" ]]; then
+            echo '::error::Set the COOLIFY_WEBHOOK and COOLIFY_TOKEN repository secrets to enable deployment.'
+            exit 1
+          fi
+          curl --fail --silent --show-error \
+            --connect-timeout 10 --max-time 60 \
+            --get --data-urlencode 'force=true' \
+            --header "Authorization: Bearer $COOLIFY_TOKEN" \
+            --output /dev/null \
+            "$COOLIFY_WEBHOOK"

@@ -21,9 +21,9 @@ Sign in through Telegram, connect an account, and set a daily start time:
 
 ```bash
 acadence login
-acadence accounts connect codex --label personal
+acadence connect --label personal
 acadence schedule add 06:00
 acadence accounts list
 ```
 
-Use `claude` instead of `codex` to connect a Claude Code account. Run `acadence help` for all commands.
+Use ↑/↓ to choose Claude Code or Codex and Enter to confirm (Esc to cancel), then sign in to the account you want to connect. You can also use `acadence accounts connect codex --label personal` (or `claude`) to choose the provider directly. Run `acadence help` for all commands.

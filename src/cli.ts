@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { anchorSchema, timezoneSchema, type Provider, type Schedule } from './domain.js';
 import { claudeAccountEmail, cleanEnvironment, parseCredentials, runProcess } from './providers.js';
 import { formatReset } from './format.js';
+import { select } from './select.js';
 import { fetchWithContext, responseJson, requestTarget, RequestError, formatError, providerErrorMessage } from './errors.js';
 
 process.umask(0o077);
@@ -101,6 +102,7 @@ program.command('login').description('Sign in and link Telegram notifications').
     await writeFile(temporary, JSON.stringify({ url, token: result.token }), { mode: 0o600 });
     await rename(temporary, configFile);
     console.log(`Signed in. Timezone: ${(await request('/v1/schedule')).timezone}`);
+    console.log('\nNext, run acadence connect, choose Claude Code or Codex, and sign in to the account you want to connect.');
     return;
   }
   throw new Error('Sign-in expired; run acadence login again');
@@ -111,13 +113,23 @@ program.command('logout').option('--all', 'Revoke all CLI sessions').action(asyn
   console.log('Signed out');
 });
 const accounts = program.command('accounts').description('Connect and manage provider accounts');
-accounts.command('connect <provider>').option('--label <name>', 'Account name', 'default').action(async (provider, options) => {
+async function connectAccount(provider: string, options: { label: string }) {
   const type = z.enum(['claude','codex']).parse(provider);
   await config();
   await credentials(type, async data => {
     await request('/v1/accounts', 'POST', { provider: type, label: options.label, credentials: data });
     console.log(`Connected ${type} / ${options.label}`);
   });
+}
+accounts.command('connect <provider>').option('--label <name>', 'Account name', 'default').action(connectAccount);
+program.command('connect').description('Choose a provider and connect an account').option('--label <name>', 'Account name', 'default').action(async options => {
+  await config();
+  const provider = await select<Provider>('Choose an account provider:', [
+    { label: 'Claude Code', value: 'claude' },
+    { label: 'Codex', value: 'codex' }
+  ]);
+  if (!provider) { console.log('Cancelled'); return; }
+  await connectAccount(provider, options);
 });
 async function showAccounts() {
   const rows = await request('/v1/accounts');

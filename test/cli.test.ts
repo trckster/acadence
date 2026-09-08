@@ -158,10 +158,17 @@ fs.writeFileSync(process.env.CODEX_HOME + '/auth.json', JSON.stringify({auth_mod
     });
     assert.equal(exit, 0, errors);
     assert.match(output, /Signed in/);
+    assert.match(output, /Next, run acadence connect/);
     const file = join(home, '.config/acadence/client.json');
     assert.equal((await stat(file)).mode & 0o777, 0o600);
     const cli = async (...args: string[]) => (await promisify(execFile)(process.execPath, [...base, ...args], { env })).stdout;
-    const connected = await cli('accounts','connect','codex','--label','test');
+    assert.match(await runCli(['connect'], env, '\x1b'), /Cancelled/);
+    assert.match(await runCli(['connect'], env, '\x03'), /Cancelled/);
+    assert.match(await runCli(['connect'], env), /Cancelled/);
+    assert.equal(store.all('SELECT * FROM accounts').length, 0);
+    const connected = await runCli(['connect', '--label', 'test'], env, '\x1b[B\x1b[A\x1b[A\r');
+    assert.match(connected, /❯ Codex/);
+    assert.doesNotMatch(connected, /Provider number/);
     assert.match(connected, /Connected codex \/ test/);
     assert.ok(!connected.includes('test-access'));
     await cli('schedule','add','06:00');

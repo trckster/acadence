@@ -33,11 +33,11 @@ Both `usage` and `accounts list` identify accounts by provider, label, and email
 ```text
 codex / personal: you@example.com
     active
-    5h: 25% used; resets 9/8/2026, 5:00:00 PM; checked 9/8/2026, 12:00:00 PM
-    Week: 42.5% used; resets not active; checked 9/8/2026, 12:00:00 PM
+    5h: 25% used; resets in 2h 3m; checked 2026-09-08 12:00
+    Week: 42.5% used; resets 2026-09-14 09:00; checked 2026-09-08 12:00
 ```
 
-Dates use the client's locale and timezone. Missing email or quota readings are marked unavailable. Codex emails come from the saved sign-in token; Claude emails are captured from `claude auth status` during connection or reauthentication. Reauthenticate an existing Claude account by label to capture its email.
+Timestamps always use `YYYY-MM-DD HH:mm` with a 24-hour clock in the client's timezone. Future resets less than 24 hours away show remaining hours and minutes instead (or `in less than 1m`). Missing email or quota readings are marked unavailable. Codex emails come from the saved sign-in token; Claude emails are captured from `claude auth status` during connection or reauthentication. Reauthenticate an existing Claude account by label to capture its email.
 
 `accounts reauth` and `accounts disconnect` accept an email or label. If multiple accounts match, narrow the selection with `--provider codex` (or `claude`) and/or `--label personal`. For example: `acadence accounts reauth you@example.com --provider codex --label personal`. Existing commands using internal account IDs remain compatible.
 

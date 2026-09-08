@@ -55,8 +55,9 @@ test('usage shows all owned accounts and stored windows, including unavailable u
     }
     const output = await cli();
     assert.match(output, /codex \/ personal: personal@example.com\n    active/);
-    assert.match(output, /5h: 25% used; resets .+; checked .+/);
-    assert.match(output, /Week: 42\.5% used; resets not active; checked .+/);
+    assert.match(output, /5h: 25% used; resets .+; checked 2026-09-08 12:00/);
+    assert.match(output, /Week: 42\.5% used; resets not active; checked 2026-09-08 12:00/);
+    assert.doesNotMatch(output, /\b(?:AM|PM)\b/);
     assert.match(output, /claude \/ work: work@example.com\n    reauth required \(auth\)/);
     assert.match(output, /Week: 100% used/);
     assert.match(output, /codex \/ new: email unavailable\n    active\n    5h: usage unavailable\n    Week: usage unavailable/);

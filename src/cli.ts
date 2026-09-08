@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { anchorSchema, timezoneSchema, type Provider, type Schedule } from './domain.js';
 import { claudeAccountEmail, cleanEnvironment, parseCredentials, runProcess } from './providers.js';
+import { formatReset, formatTimestamp } from './format.js';
 
 process.umask(0o077);
 const program = new Command().name('acadence').description('Manage Claude Code and Codex usage windows').version('0.1.0');
@@ -114,6 +115,7 @@ accounts.command('connect <provider>').option('--label <name>', 'Account name', 
 });
 async function showAccounts() {
   const rows = await request('/v1/accounts');
+  const now = Date.now();
   if (!rows.length) { console.log('No accounts connected'); return; }
   for (const row of rows) {
     if (row !== rows[0]) console.log();
@@ -122,7 +124,7 @@ async function showAccounts() {
     for (const [kind, label] of [['five_hour', '5h'], ['weekly', 'Week']]) {
       const limit = row.limits.find((item: any) => item.kind === kind);
       console.log(limit
-        ? `    ${label}: ${limit.used}% used; resets ${limit.resetsAt === null ? 'not active' : new Date(limit.resetsAt).toLocaleString()}; checked ${new Date(limit.sampledAt).toLocaleString()}`
+        ? `    ${label}: ${limit.used}% used; resets ${formatReset(limit.resetsAt, now)}; checked ${formatTimestamp(limit.sampledAt)}`
         : `    ${label}: usage unavailable`);
     }
     if (row.pending.length) console.log(`    ${row.pending.length} pending operation(s)`);

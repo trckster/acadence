@@ -11,12 +11,19 @@ import { Engine } from '../src/engine.js';
 import { Telegram } from '../src/telegram.js';
 import { createApi } from '../src/api.js';
 
-test('usage shows all owned accounts and stored windows, including unavailable usage', async () => {
+test('usage fetches owned accounts and never displays stale windows', async () => {
   const home = await mkdtemp(join(tmpdir(), 'acadence-usage-test-'));
   const store = new Store(':memory:');
   const vault = new Vault(Buffer.alloc(32, 4).toString('base64'));
   let providerCalls = 0;
-  const engine = new Engine(store, vault, { execute: async () => { providerCalls++; return { windows: [] }; } });
+  const engine = new Engine(store, vault, { execute: async (_provider, credentials, action) => {
+    providerCalls++;
+    assert.equal(action, 'poll');
+    return { windows: 'tokens' in credentials && credentials.tokens.id_token !== 'unavailable' ? [
+      { kind: 'five_hour', used: 30, resetsAt: Date.parse('2030-09-08T17:00:00Z') },
+      { kind: 'weekly', used: 45, resetsAt: null }
+    ] : [] };
+  } });
   const app = await createApi(store, vault, engine, 'test_bot');
   try {
     const url = await app.listen({ host: '127.0.0.1', port: 0 });
@@ -55,15 +62,16 @@ test('usage shows all owned accounts and stored windows, including unavailable u
     }
     const output = await cli();
     assert.match(output, /codex \/ personal: personal@example.com\n    active/);
-    assert.match(output, /5h: 25% used; resets .+; checked 2026-09-08 12:00/);
-    assert.match(output, /Week: 42\.5% used; resets not active; checked 2026-09-08 12:00/);
-    assert.doesNotMatch(output, /\b(?:AM|PM)\b/);
+    assert.match(output, /5h: 30% used; resets 2030-09-08 17:00/);
+    assert.match(output, /Week: 45% used; resets not active/);
+    assert.doesNotMatch(output, /\b(?:AM|PM|checked)\b/);
     assert.match(output, /claude \/ work: work@example.com\n    reauth required \(auth\)/);
-    assert.match(output, /Week: 100% used/);
+    assert.match(output, /Usage unavailable: reauthentication required/);
     assert.match(output, /codex \/ new: email unavailable\n    active\n    5h: usage unavailable\n    Week: usage unavailable/);
-    assert.doesNotMatch(output, /private-other-user|88%|99%|credential-must-not-appear/);
-    assert.equal(providerCalls, 0);
+    assert.doesNotMatch(output, /private-other-user|25%|42\.5%|100%|88%|99%|credential-must-not-appear/);
+    assert.equal(providerCalls, 2);
     assert.equal(await cli('accounts', 'list'), output);
+    assert.equal(providerCalls, 4);
     store.run('UPDATE accounts SET credentials=? WHERE id=?', vault.seal({ tokens: { id_token: `header.${Buffer.from(JSON.stringify({ email: 'work@example.com' })).toString('base64url')}.signature` } }, 'new'), 'new');
     await assert.rejects(cli('accounts', 'disconnect', 'work@example.com'), /Multiple accounts match/);
     await assert.rejects(cli('accounts', 'reauth', 'work@example.com'), /Multiple accounts match/);

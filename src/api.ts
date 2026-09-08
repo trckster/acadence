@@ -90,6 +90,23 @@ export async function createApi(store: Store, vault: Vault, engine: Engine, botU
     store.run('INSERT INTO accounts(id,user_id,provider,label,credentials) VALUES(?,?,?,?,?)', id, user.id, body.provider, body.label, vault.seal(credentials, id));
     return { id, status: 'active', message: 'Connected; limits will appear after the first check' };
   });
+  app.post<{ Params: { id: string } }>('/v1/accounts/:id/usage', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async request => {
+    const account = owned(authenticate(request.headers.authorization), request.params.id);
+    if (account.status !== 'active') return { limits: [], refreshError: 'reauthentication required' };
+    if (engine.busy.has(account.id) || engine.busy.size >= engine.concurrency) return { limits: [], refreshError: 'account operation in progress; retry shortly' };
+    engine.busy.add(account.id);
+    try {
+      const snapshot = await engine.poll(account, Date.now());
+      const current = owned(authenticate(request.headers.authorization), account.id);
+      return {
+        status: current.status, lastError: current.last_error,
+        email: accountEmail(vault.open<Credentials>(current.credentials, current.id)),
+        limits: snapshot?.windows ?? [],
+        pending: store.all('SELECT reason,attempts,due FROM jobs WHERE account_id=?', account.id),
+        refreshError: snapshot ? null : current.last_error ?? 'provider unavailable'
+      };
+    } finally { engine.busy.delete(account.id); }
+  });
   app.put<{ Params: { id: string } }>('/v1/accounts/:id', async request => {
     const account = owned(authenticate(request.headers.authorization), request.params.id);
     idle(account);

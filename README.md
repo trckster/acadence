@@ -26,15 +26,15 @@ acadence logout --all
 
 The API defaults to `https://acadance.daniil.online`. Sign-in opens Telegram; approve only a sign-in you initiated. First login stores the detected system timezone. Change it with `acadence schedule timezone Europe/Rome`. `login --api https://your-host` supports self-hosting.
 
-`acadence usage` shows the last recorded usage for every connected account belonging to the signed-in user: account status, five-hour and weekly usage percentages where available, reset times, and when each reading was checked. Accounts without readings are also listed. Usage is checked by the server hourly and shortly after openings; this command displays stored readings without requesting a fresh provider check.
+`acadence usage` and `acadence accounts list` fetch current usage from each connected account before displaying it. Each account shows its status, five-hour and weekly usage percentages where available, and reset times. Accounts are refreshed in batches of up to four; provider checks can take a few seconds. If a provider fails, authentication has expired, or server operations are busy, that account shows an explicit usage-unavailable reason instead of an old reading. Other accounts still display their successful results.
 
 Both `usage` and `accounts list` identify accounts by provider, label, and email:
 
 ```text
 codex / personal: you@example.com
     active
-    5h: 25% used; resets in 2h 3m; checked 2026-09-08 12:00
-    Week: 42.5% used; resets 2026-09-14 09:00; checked 2026-09-08 12:00
+    5h: 25% used; resets in 2h 3m
+    Week: 42.5% used; resets 2026-09-14 09:00
 ```
 
 Timestamps always use `YYYY-MM-DD HH:mm` with a 24-hour clock in the client's timezone. Future resets less than 24 hours away show remaining hours and minutes instead (or `in less than 1m`). Missing email or quota readings are marked unavailable. Codex emails come from the saved sign-in token; Claude emails are captured from `claude auth status` during connection or reauthentication. Reauthenticate an existing Claude account by label to capture its email.

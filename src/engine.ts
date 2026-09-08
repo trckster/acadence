@@ -87,10 +87,12 @@ export class Engine {
     try {
       const snapshot = await this.operate(account, 'poll');
       if (snapshot) this.observe(account, snapshot, now);
+      return snapshot;
     } catch (error) {
       const failures = account.failures + 1;
       this.store.run('UPDATE accounts SET failures=? WHERE id=?', failures, account.id);
       this.failure(account, error, failures, now);
+      return null;
     }
   }
   async executeJob(account: Account, job: Job, now: number) {
@@ -149,10 +151,12 @@ export class Engine {
       const accounts = this.store.all<Account>("SELECT * FROM accounts WHERE status='active' ORDER BY MIN(next_poll,COALESCE(next_session,next_poll))");
       for (let i = 0; i < accounts.length; i += this.concurrency) {
         await Promise.all(accounts.slice(i, i + this.concurrency).map(async initial => {
-          if (this.busy.has(initial.id)) return;
+          if (this.busy.has(initial.id) || this.busy.size >= this.concurrency) return;
+          const latest = this.store.get<Account>('SELECT * FROM accounts WHERE id=?', initial.id);
+          if (!latest || latest.status !== 'active') return;
           this.busy.add(initial.id);
           try {
-            if (initial.next_poll <= now) await this.poll(initial, now);
+            if (latest.next_poll <= now) await this.poll(latest, now);
             const account = this.store.get<Account>('SELECT * FROM accounts WHERE id=?', initial.id);
             if (!account || account.status !== 'active') return;
             const job = this.store.get<Job>("SELECT * FROM jobs WHERE account_id=? AND due<=? ORDER BY CASE reason WHEN 'weekly_reset' THEN 0 WHEN 'manual' THEN 1 ELSE 2 END,id LIMIT 1", account.id, Date.now());

@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { anchorSchema, timezoneSchema, type Provider, type Schedule } from './domain.js';
 import { claudeAccountEmail, cleanEnvironment, parseCredentials, runProcess } from './providers.js';
-import { formatReset, formatTimestamp } from './format.js';
+import { formatReset } from './format.js';
 
 process.umask(0o077);
 const program = new Command().name('acadence').description('Manage Claude Code and Codex usage windows').version('0.1.0');
@@ -27,11 +27,11 @@ async function config(): Promise<Config> {
   try { const value = configSchema.parse(JSON.parse(await readFile(configFile, 'utf8'))); validateUrl(value.url); return value; }
   catch { throw new Error('Run acadence login first'); }
 }
-async function request(path: string, method = 'GET', body?: unknown, auth?: Config) {
+async function request(path: string, method = 'GET', body?: unknown, auth?: Config, timeout = 30_000) {
   const current = auth ?? await config();
   const response = await fetch(validateUrl(current.url) + path, {
     method, headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(current.token ? { authorization: `Bearer ${current.token}` } : {}) },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: 'error', signal: AbortSignal.timeout(30_000)
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: 'error', signal: AbortSignal.timeout(timeout)
   });
   const result = await response.json() as any;
   if (!response.ok) throw new Error(typeof result.error === 'string' ? result.error : `Request failed (${response.status})`);
@@ -115,23 +115,34 @@ accounts.command('connect <provider>').option('--label <name>', 'Account name', 
 });
 async function showAccounts() {
   const rows = await request('/v1/accounts');
+  for (let i = 0; i < rows.length; i += 4) {
+    await Promise.all(rows.slice(i, i + 4).map(async (row: any) => {
+      row.limits = [];
+      try {
+        Object.assign(row, await request(`/v1/accounts/${encodeURIComponent(row.id)}/usage`, 'POST', {}, undefined, 120_000));
+      } catch {
+        row.refreshError = 'refresh failed; retry shortly';
+      }
+    }));
+  }
   const now = Date.now();
   if (!rows.length) { console.log('No accounts connected'); return; }
   for (const row of rows) {
     if (row !== rows[0]) console.log();
     console.log(`${row.provider} / ${row.label}: ${row.email ?? 'email unavailable'}`);
     console.log(`    ${row.status.replaceAll('_', ' ')}${row.lastError ? ` (${row.lastError})` : ''}`);
+    if (row.refreshError) console.log(`    Usage unavailable: ${row.refreshError}`);
     for (const [kind, label] of [['five_hour', '5h'], ['weekly', 'Week']]) {
       const limit = row.limits.find((item: any) => item.kind === kind);
       console.log(limit
-        ? `    ${label}: ${limit.used}% used; resets ${formatReset(limit.resetsAt, now)}; checked ${formatTimestamp(limit.sampledAt)}`
+        ? `    ${label}: ${limit.used}% used; resets ${formatReset(limit.resetsAt, now)}`
         : `    ${label}: usage unavailable`);
     }
     if (row.pending.length) console.log(`    ${row.pending.length} pending operation(s)`);
   }
 }
 accounts.command('list').action(showAccounts);
-program.command('usage').description('Show last recorded usage for every account of the signed-in user').action(showAccounts);
+program.command('usage').description('Fetch current usage for every account of the signed-in user').action(showAccounts);
 async function resolveAccount(value: string, options: { provider?: string; label?: string }) {
   if (options.provider) z.enum(['claude', 'codex']).parse(options.provider);
   const rows = await request('/v1/accounts');

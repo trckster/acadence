@@ -110,7 +110,7 @@ accounts.command('connect <provider>').option('--label <name>', 'Account name', 
     console.log(`Connected ${options.label}: ${result.id}`);
   });
 });
-accounts.command('list').action(async () => {
+async function showAccounts() {
   const rows = await request('/v1/accounts');
   if (!rows.length) { console.log('No accounts connected'); return; }
   for (const row of rows) {
@@ -119,7 +119,9 @@ accounts.command('list').action(async () => {
     for (const limit of row.limits) console.log(`  ${limit.kind}: ${limit.used}% used; resets ${limit.resetsAt ? new Date(limit.resetsAt).toLocaleString() : 'not active'}; checked ${new Date(limit.sampledAt).toLocaleString()}`);
     if (row.pending.length) console.log(`  ${row.pending.length} pending operation(s)`);
   }
-});
+}
+accounts.command('list').action(showAccounts);
+program.command('usage').description('Show last recorded usage for every account of the signed-in user').action(showAccounts);
 accounts.command('disconnect <id>').action(async id => { await request(`/v1/accounts/${encodeURIComponent(id)}`, 'DELETE'); console.log('Disconnected'); });
 accounts.command('reauth <id>').action(async id => {
   const rows = await request('/v1/accounts');

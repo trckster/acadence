@@ -6,10 +6,64 @@ import { mkdtemp, mkdir, writeFile, rm, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Store } from '../src/db.js';
-import { Vault } from '../src/security.js';
+import { Vault, hash, secret } from '../src/security.js';
 import { Engine } from '../src/engine.js';
 import { Telegram } from '../src/telegram.js';
 import { createApi } from '../src/api.js';
+
+test('usage shows all owned accounts and stored windows, including unavailable usage', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'acadence-usage-test-'));
+  const store = new Store(':memory:');
+  const vault = new Vault(Buffer.alloc(32, 4).toString('base64'));
+  let providerCalls = 0;
+  const engine = new Engine(store, vault, { execute: async () => { providerCalls++; return { windows: [] }; } });
+  const app = await createApi(store, vault, engine, 'test_bot');
+  try {
+    const url = await app.listen({ host: '127.0.0.1', port: 0 });
+    const cli = async () => (await promisify(execFile)(process.execPath, ['--import', 'tsx', resolve('src/cli.ts'), 'usage'], {
+      env: { ...process.env, HOME: home, TZ: 'UTC', LANG: 'en_US.UTF-8' }
+    })).stdout;
+    await assert.rejects(cli(), /Run acadence login first/);
+    const token = secret();
+    store.run("INSERT INTO users(id,telegram_id,timezone) VALUES('owner','1','UTC'),('other','2','UTC')");
+    store.run('INSERT INTO tokens(hash,user_id,created,expires) VALUES(?,?,?,?)', hash(token), 'owner', Date.now(), Date.now() + 60_000);
+    const configDir = join(home, '.config', 'acadence');
+    await mkdir(configDir, { recursive: true });
+    await writeFile(join(configDir, 'client.json'), JSON.stringify({ url, token }));
+    assert.equal((await cli()).trim(), 'No accounts connected');
+    for (const [id, user, provider, label, status, error] of [
+      ['personal', 'owner', 'codex', 'personal', 'active', null],
+      ['work', 'owner', 'claude', 'work', 'reauth_required', 'auth'],
+      ['new', 'owner', 'codex', 'new', 'active', null],
+      ['foreign', 'other', 'codex', 'private-other-user', 'active', null]
+    ]) {
+      store.run('INSERT INTO accounts(id,user_id,provider,label,status,last_error,credentials) VALUES(?,?,?,?,?,?,?)',
+        id!, user!, provider!, label!, status!, error!, 'credential-must-not-appear');
+    }
+    const sampledAt = Date.parse('2026-09-08T12:00:00Z');
+    const resetsAt = Date.parse('2026-09-08T17:00:00Z');
+    for (const [id, kind, used, reset, present] of [
+      ['personal', 'five_hour', 25, resetsAt, 1],
+      ['personal', 'weekly', 42.5, null, 1],
+      ['work', 'weekly', 100, resetsAt, 1],
+      ['work', 'five_hour', 99, resetsAt, 0],
+      ['foreign', 'weekly', 88, resetsAt, 1]
+    ] as const) {
+      store.run('INSERT INTO windows(account_id,kind,used,resets_at,sampled_at,present) VALUES(?,?,?,?,?,?)', id, kind, used, reset, sampledAt, present);
+    }
+    const output = await cli();
+    assert.match(output, /personal  codex \/ personal  active/);
+    assert.match(output, /five_hour: 25% used; resets .+; checked .+/);
+    assert.match(output, /weekly: 42\.5% used; resets not active; checked .+/);
+    assert.match(output, /work  claude \/ work  reauth_required \(auth\)/);
+    assert.match(output, /weekly: 100% used/);
+    assert.match(output, /new  codex \/ new  active\n  Limits not detected yet/);
+    assert.doesNotMatch(output, /private-other-user|88%|99%|credential-must-not-appear/);
+    assert.equal(providerCalls, 0);
+    store.run('DELETE FROM tokens');
+    await assert.rejects(cli(), /Sign in with acadence login/);
+  } finally { await app.close(); store.close(); await rm(home, { recursive: true, force: true }); }
+});
 
 test('CLI completes login, isolated provider connection, scheduling, trigger and logout', async () => {
   const home = await mkdtemp(join(tmpdir(), 'acadence-cli-test-'));

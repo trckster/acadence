@@ -1,6 +1,7 @@
 import { Store, type Account, type Job, type User, type WindowRow } from './db.js';
-import { anchorsAround, canContinue, FIVE, HOUR, nextAnchor, nextScheduled, resetDetected, type Snapshot } from './domain.js';
-import { type Credentials, type ProviderAdapter, ProviderError } from './providers.js';
+import { anchorsAround, canContinue, FIVE, HOUR, nextAnchor, nextScheduled, resetDetected, windowRolledOver, type Snapshot } from './domain.js';
+import { accountEmail, type Credentials, type ProviderAdapter, ProviderError } from './providers.js';
+import { formatAccount, formatUsage } from './format.js';
 import { Vault } from './security.js';
 
 export class Engine {
@@ -23,6 +24,9 @@ export class Engine {
         account.id, reason, dedupe, now, account.version, user.schedule_version, expires);
     }
   }
+  accountName(account: Account) {
+    return formatAccount(account.provider, accountEmail(this.vault.open<Credentials>(account.credentials, account.id)));
+  }
   observe(account: Account, snapshot: Snapshot, now: number) {
     this.store.transaction(() => {
       const user = this.store.get<User>('SELECT * FROM users WHERE id=?', account.user_id)!;
@@ -36,13 +40,14 @@ export class Engine {
       for (const window of snapshot.windows) {
         const old = previous.find(w => w.kind === window.kind);
         const reset = !!old?.present && resetDetected({ kind: old.kind, used: old.used, resetsAt: old.resets_at }, window, now);
-        const generation = (old?.generation ?? 0) + (reset ? 1 : 0);
+        const rollover = !!old?.present && windowRolledOver({ kind: old.kind, used: old.used, resetsAt: old.resets_at }, window, now);
+        const generation = (old?.generation ?? 0) + (reset || rollover || !!old && !old.present ? 1 : 0);
         this.store.run(`INSERT INTO windows(account_id,kind,used,resets_at,generation,sampled_at,present) VALUES(?,?,?,?,?,?,1)
           ON CONFLICT(account_id,kind) DO UPDATE SET used=excluded.used,resets_at=excluded.resets_at,generation=excluded.generation,sampled_at=excluded.sampled_at,present=1`,
         account.id, window.kind, window.used, window.resetsAt, generation, now);
         if (reset) {
           resets.push(`${window.kind}:${generation}`);
-          this.store.notify(account.user_id, account.id, `reset:${account.id}:${window.kind}:${generation}`, `${account.label}: ${window.kind === 'weekly' ? 'weekly' : '5-hour'} usage window reset detected.`, now);
+          this.store.notify(account.user_id, account.id, `reset:${account.id}:${window.kind}:${generation}`, `${this.accountName(account)}\n🎁 Quota restored before the scheduled reset.\n${formatUsage(window, now, user.timezone)}`, now);
           if (window.kind === 'weekly') weeklyReset = true;
           else fiveReset = true;
         }
@@ -75,11 +80,11 @@ export class Engine {
     if (code === 'auth') {
       this.store.run("UPDATE accounts SET status='reauth_required' WHERE id=?", account.id);
       this.store.run('DELETE FROM jobs WHERE account_id=?', account.id);
-      this.store.notify(account.user_id, account.id, `auth:${account.id}:${account.version}`, `${account.label}: authentication expired or was rejected. Run acadence accounts reauth ${account.id}.`, now);
+      this.store.notify(account.user_id, account.id, `auth:${account.id}:${account.version}`, `⚠️ ${this.accountName(account)}\nAuthentication expired or was rejected. Run acadence accounts reauth.`, now);
     } else if (attempts >= 3 || code === 'quota_schema') {
       if (code === 'quota_schema') this.store.run("DELETE FROM jobs WHERE account_id=? AND reason IN ('anchor','scheduled','five_reset')", account.id);
       this.store.notify(account.user_id, account.id, `error:${account.id}:${code}:${Math.floor(now / (24 * HOUR))}`,
-        `${account.label}: ${code === 'quota_schema' ? 'provider quota format is unsupported; check for an Acadence update' : 'provider requests repeatedly failed; Acadence will keep retrying'}.`, now);
+        `⚠️ ${this.accountName(account)}\n${code === 'quota_schema' ? 'provider quota format is unsupported; check for an Acadence update' : 'provider requests repeatedly failed; Acadence will keep retrying'}.`, now);
     }
   }
   async poll(account: Account, now: number) {
@@ -115,13 +120,16 @@ export class Engine {
     }
   }
   reminders(now: number) {
-    const rows = this.store.all<WindowRow & { user_id: string; label: string }>(`SELECT w.*,a.user_id,a.label FROM windows w JOIN accounts a ON a.id=w.account_id
+    const rows = this.store.all<WindowRow & { user_id: string; timezone: string }>(`SELECT w.*,a.user_id,u.timezone FROM windows w JOIN accounts a ON a.id=w.account_id JOIN users u ON u.id=a.user_id
       WHERE w.present=1 AND a.status='active' AND w.resets_at>?`, now);
     for (const window of rows) {
       const lead = window.kind === 'five_hour' ? HOUR : 24 * HOUR;
       if (window.resets_at! - now <= lead) {
-        this.store.notify(window.user_id, window.account_id, `reminder:${window.account_id}:${window.kind}:${window.generation}:${window.resets_at}`,
-          `${window.label}: ${window.kind === 'five_hour' ? '5-hour' : 'weekly'} window expires at ${new Date(window.resets_at!).toISOString()} (within ${window.kind === 'five_hour' ? '1 hour' : '1 day'}).`, now);
+        const dedupe = `reminder:${window.account_id}:${window.kind}:${window.generation}`;
+        // Honor reminders persisted by older versions, whose keys included the exact expiry.
+        if (this.store.get('SELECT id FROM notifications WHERE dedupe=? OR dedupe LIKE ?', dedupe, `${dedupe}:%`)) continue;
+        this.store.notify(window.user_id, window.account_id, dedupe,
+          `${this.accountName(this.store.get<Account>('SELECT * FROM accounts WHERE id=?', window.account_id)!)}\n⏳ ${formatUsage({ kind: window.kind, used: window.used, resetsAt: window.resets_at }, now, window.timezone)}`, now);
       }
     }
   }

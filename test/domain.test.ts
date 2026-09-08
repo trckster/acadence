@@ -37,12 +37,18 @@ test('continuations use elapsed hours on a DST day', () => {
   const start = Date.parse('2026-03-28T23:00:00Z');
   assert.equal(nextScheduled(schedule, start), start + FIVE);
 });
-test('reset detection requires observed evidence, not just a clock passing', () => {
+test('provider grants require restored quota before a known expiry', () => {
   const now = Date.now();
-  const old = { kind: 'five_hour' as const, used: 60, resetsAt: now - HOUR };
-  assert.equal(resetDetected(old, old, now), false);
-  assert.equal(resetDetected(old, { ...old, used: 65, resetsAt: now + FIVE }, now), true);
-  assert.equal(resetDetected(old, { ...old, used: 0, resetsAt: null }, now), true);
-  assert.equal(resetDetected({ ...old, resetsAt: null }, { ...old, used: 20, resetsAt: null }, now), true);
-  assert.equal(resetDetected(old, { ...old, used: 59.8 }, now), false);
+  for (const kind of ['five_hour', 'weekly'] as const) {
+    const old = { kind, used: 60, resetsAt: now + HOUR };
+    assert.equal(resetDetected(old, { ...old, used: 0 }, now), true);
+    assert.equal(resetDetected(old, { ...old, used: 20, resetsAt: null }, now), true);
+    assert.equal(resetDetected(old, { ...old, used: 59.8 }, now), false);
+    assert.equal(resetDetected(old, { ...old, resetsAt: now + FIVE }, now), false);
+    assert.equal(resetDetected({ ...old, resetsAt: null }, { ...old, used: 0 }, now), false);
+    for (const expiry of [now - HOUR, now, now + 30_000]) {
+      assert.equal(resetDetected({ ...old, resetsAt: expiry }, { ...old, used: 0 }, now), false);
+      assert.equal(resetDetected({ ...old, resetsAt: expiry }, { ...old, used: 0, resetsAt: null }, now), false);
+    }
+  }
 });

@@ -85,13 +85,13 @@ test('accounts list fetches owned accounts and never displays stale windows', as
       store.run('INSERT INTO windows(account_id,kind,used,resets_at,sampled_at,present) VALUES(?,?,?,?,?,?)', id, kind, used, reset, sampledAt, present);
     }
     const output = await cli();
-    assert.match(output, /codex \/ personal: personal@example.com\n    active/);
+    assert.match(output, /codex: personal@example.com\n    active/);
     assert.match(output, /5h: 30% used; resets 2030-09-08 17:00/);
     assert.match(output, /Week: 45% used; resets not active/);
     assert.doesNotMatch(output, /\b(?:AM|PM|checked)\b/);
-    assert.match(output, /claude \/ work: work@example.com\n    reauth required \(authentication expired or rejected; run acadence accounts reauth\)/);
+    assert.match(output, /claude: work@example.com\n    reauth required \(authentication expired or rejected; run acadence accounts reauth\)/);
     assert.match(output, /Usage unavailable: reauthentication required/);
-    assert.match(output, /codex \/ new: email unavailable\n    active\n    5h: usage unavailable\n    Week: usage unavailable/);
+    assert.match(output, /codex: email unavailable\n    active\n    5h: usage unavailable\n    Week: usage unavailable/);
     assert.doesNotMatch(output, /private-other-user|25%|42\.5%|100%|88%|99%|credential-must-not-appear/);
     assert.equal(providerCalls, 2);
     assert.equal(await cli('accounts', 'list'), output);
@@ -106,8 +106,8 @@ test('accounts list fetches owned accounts and never displays stale windows', as
     assert.equal(store.all('SELECT id FROM accounts').length, 4);
     const selection = await choose('disconnect', '0\n99\nabc\n1\n');
     assert.match(selection, /Enter a number from 1 to 3/);
-    assert.match(selection, /1\. codex \/ new: work@example.com/);
-    assert.match(selection, /3\. claude \/ work: work@example.com/);
+    assert.match(selection, /1\. codex: work@example.com/);
+    assert.match(selection, /3\. claude: work@example.com/);
     assert.doesNotMatch(selection, /private-other-user|foreign/);
     assert.equal(store.get('SELECT id FROM accounts WHERE id=?', 'new'), undefined);
     await choose('disconnect', '1\n');
@@ -166,17 +166,17 @@ fs.writeFileSync(process.env.CODEX_HOME + '/auth.json', JSON.stringify({auth_mod
     assert.match(await runCli(['connect'], env, '\x03'), /Cancelled/);
     assert.match(await runCli(['connect'], env), /Cancelled/);
     assert.equal(store.all('SELECT * FROM accounts').length, 0);
-    const connected = await runCli(['connect', '--label', 'test'], env, '\x1b[B\x1b[A\x1b[A\r');
+    const connected = await runCli(['connect'], env, '\x1b[B\x1b[A\x1b[A\r');
     assert.match(connected, /❯ Codex/);
     assert.doesNotMatch(connected, /Provider number/);
-    assert.match(connected, /Connected codex \/ test/);
+    assert.match(connected, /Connected codex/);
     assert.ok(!connected.includes('test-access'));
     await cli('schedule','add','06:00');
     await cli('schedule','remove','06:00');
     await cli('schedule','add','07:00');
     assert.match(await cli('schedule','show'), /07:00/);
     assert.match(await cli('trigger'), /Queued 1/);
-    assert.match(await cli('accounts','list'), /codex \/ test/);
+    assert.match(await cli('accounts','list'), /codex: test@example.com/);
     const id = store.get<{ id: string }>('SELECT id FROM accounts')!.id;
     const reauth = await runCli(['accounts', 'reauth'], env, '1\n');
     assert.match(reauth, /Authentication updated/);

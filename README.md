@@ -22,7 +22,7 @@ acadence accounts disconnect
 acadence logout --all
 ```
 
-The API defaults to `https://acadance.daniil.online`. Sign-in opens Telegram; approve only a sign-in you initiated. First login stores the detected system timezone. Change it with `acadence schedule timezone Europe/Rome`. `login --api https://your-host` supports self-hosting.
+The API defaults to `https://acadence.daniil.online`. Sign-in opens Telegram; approve only a sign-in you initiated. First login stores the detected system timezone. Change it with `acadence schedule timezone Europe/Rome`. `login --api https://your-host` supports self-hosting.
 
 `acadence accounts list` fetches current usage from each connected account before displaying it. Each account shows its status, five-hour and weekly usage percentages where available, and reset times. Accounts are refreshed in batches of up to four; provider checks can take a few seconds. If a provider fails, authentication has expired, or server operations are busy, that account shows an explicit usage-unavailable reason instead of an old reading. Other accounts still display their successful results.
 
@@ -61,7 +61,7 @@ openssl rand -base64 32
 
 Put the generated value in `ENCRYPTION_KEY` and your dedicated BotFather token in `TELEGRAM_BOT_TOKEN`. Keep the encryption key stable and backed up separately; changing it makes stored accounts unreadable. The bot must have no webhook configured. For local development, export these variables, set `DATABASE_PATH=./data/acadence.sqlite`, and run `npm start`; connect with `acadence login --api http://localhost:3000`.
 
-In Coolify, add this Git repository as a **Docker Compose** application using `docker-compose.yml`. Set both required secrets, and assign `https://acadance.daniil.online:3000` to the `acadence` service (Coolify terminates HTTPS on port 443). Point DNS at Coolify. Deploy **one replica**, with overlapping/rolling deployments disabled. The service runs as non-root, restarts unless stopped, and exposes `/health`. The named volume `acadence-data` persists `/data`, including SQLite WAL state; never delete it during redeploys. Back up the volume while the service is stopped, together with a separately secured copy of the encryption key.
+In Coolify, add this Git repository as a **Docker Compose** application using `docker-compose.yml`. Set both required secrets, and assign `https://acadence.daniil.online:3000` to the `acadence` service (Coolify terminates HTTPS on port 443). Point DNS at Coolify. Deploy **one replica**, with overlapping/rolling deployments disabled. The service runs as non-root, restarts unless stopped, and exposes `/health`. The named volume `acadence-data` persists `/data`, including SQLite WAL state; never delete it during redeploys. Back up the volume while the service is stopped, together with a separately secured copy of the encryption key.
 
 Optional variables: `WORKER_CONCURRENCY` (default 4), `CODEX_MODEL`, `CLAUDE_MODEL` (otherwise provider defaults). The image pins provider CLI versions; update and test the Docker build arguments when upgrading. Container temporary credentials live on tmpfs and are removed after each operation.
 

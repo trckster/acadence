@@ -9,7 +9,7 @@ import { hash, secret, Vault } from './security.js';
 import { Engine } from './engine.js';
 
 export async function createApi(store: Store, vault: Vault, engine: Engine, botUsername: string, telegramHealthy = () => true) {
-  const app = Fastify({ logger: false, bodyLimit: 128 * 1024, trustProxy: Number(process.env.TRUST_PROXY_HOPS ?? 0) });
+  const app = Fastify({ logger: false, bodyLimit: 128 * 1024, trustProxy: (_address, hop) => hop < Number(process.env.TRUST_PROXY_HOPS ?? 0) });
   await app.register(rateLimit, { max: 120, timeWindow: '1 minute', keyGenerator: request => request.headers.authorization ? hash(request.headers.authorization) : request.ip });
   app.addHook('onSend', async (_request, reply) => {
     reply.header('cache-control', 'no-store');

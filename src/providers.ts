@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { z } from 'zod';
@@ -52,7 +52,7 @@ export function parseCodexUsage(value: unknown): Snapshot {
 
 export function cleanEnvironment(home: string): NodeJS.ProcessEnv {
   return {
-    PATH: process.env.PATH, HOME: home, USERPROFILE: home, TMPDIR: tmpdir(),
+    PATH: process.env.PATH, VOLTA_HOME: process.env.VOLTA_HOME ?? join(homedir(), '.volta'), HOME: home, USERPROFILE: home, TMPDIR: tmpdir(),
     LANG: 'C.UTF-8', CODEX_HOME: join(home, '.codex'), CLAUDE_CONFIG_DIR: join(home, '.claude'),
     DISABLE_AUTOUPDATER: '1', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1'
   };

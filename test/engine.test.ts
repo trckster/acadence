@@ -98,3 +98,46 @@ test('queued retries and observations survive reopening SQLite', () => {
     recovered.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+test('overlapping worker ticks never start duplicate operations for one account', async () => {
+  let calls = 0;
+  let finish!: () => void;
+  const blocked = new Promise<void>(resolve => { finish = resolve; });
+  const { store, account, engine } = fixture({ execute: async () => { calls++; await blocked; return null; } });
+  store.run('UPDATE accounts SET next_poll=?', Date.now() + HOUR);
+  engine.enqueue(account(), 'manual', 'manual:a', Date.now());
+  const first = engine.tick();
+  await engine.tick();
+  assert.equal(calls, 1);
+  finish();
+  await first;
+  assert.equal(store.all('SELECT * FROM jobs').length, 0);
+  store.close();
+});
+test('schedule edits and credential replacement invalidate older queued work', async () => {
+  let calls = 0;
+  const { store, account, engine } = fixture({ execute: async () => { calls++; return null; } });
+  engine.enqueue(account(), 'scheduled', 'scheduled:a', Date.now());
+  store.run('UPDATE users SET schedule_version=schedule_version+1');
+  await engine.executeJob(account(), store.all<Job>('SELECT * FROM jobs')[0]!, Date.now());
+  assert.equal(calls, 0);
+  engine.enqueue(account(), 'manual', 'manual:a', Date.now());
+  store.run('UPDATE accounts SET version=version+1');
+  await engine.executeJob(account(), store.all<Job>('SELECT * FROM jobs')[0]!, Date.now());
+  assert.equal(calls, 0);
+  assert.equal(store.all('SELECT * FROM jobs').length, 0);
+  store.close();
+});
+test('different opening reasons share one retry operation and weekly resets take priority', () => {
+  const { store, account, engine } = fixture();
+  const now = Date.now();
+  engine.enqueue(account(), 'scheduled', 'anchor:a', now, now + FIVE);
+  store.run('UPDATE jobs SET due=?,attempts=2', now + 60_000);
+  engine.enqueue(account(), 'manual', 'manual:a', now + 1000);
+  engine.enqueue(account(), 'weekly_reset', 'weekly:a', now + 2000);
+  const jobs = store.all<Job>('SELECT * FROM jobs');
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]!.reason, 'weekly_reset');
+  assert.equal(jobs[0]!.expires, null);
+  assert.equal(jobs[0]!.attempts, 2);
+  store.close();
+});

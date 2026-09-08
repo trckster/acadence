@@ -54,6 +54,7 @@ export class Store {
         schedule_version INTEGER NOT NULL, expires INTEGER
       );
       CREATE INDEX IF NOT EXISTS jobs_due ON jobs(due);
+      CREATE UNIQUE INDEX IF NOT EXISTS jobs_account ON jobs(account_id);
       CREATE TABLE IF NOT EXISTS notifications (
         id INTEGER PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         account_id TEXT REFERENCES accounts(id) ON DELETE CASCADE,

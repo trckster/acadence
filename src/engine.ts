@@ -10,8 +10,18 @@ export class Engine {
   constructor(readonly store: Store, readonly vault: Vault, readonly providers: ProviderAdapter, readonly concurrency = 4) {}
   enqueue(account: Account, reason: string, dedupe: string, now: number, expires: number | null = null) {
     const user = this.store.get<User>('SELECT * FROM users WHERE id=?', account.user_id)!;
-    this.store.run('INSERT OR IGNORE INTO jobs(account_id,reason,dedupe,due,account_version,schedule_version,expires) VALUES(?,?,?,?,?,?,?)',
-      account.id, reason, dedupe, now, account.version, user.schedule_version, expires);
+    const existing = this.store.get<Job>('SELECT * FROM jobs WHERE account_id=?', account.id);
+    if (existing?.dedupe === dedupe) return;
+    if (existing) {
+      const priority: Record<string, number> = { weekly_reset: 0, manual: 1, scheduled: 2, five_reset: 3 };
+      const promote = priority[reason]! <= priority[existing.reason]!;
+      this.store.run('UPDATE jobs SET reason=?,dedupe=?,due=MIN(due,?),account_version=?,schedule_version=?,expires=? WHERE id=?',
+        promote ? reason : existing.reason, promote ? dedupe : existing.dedupe, now, account.version,
+        user.schedule_version, promote ? expires : existing.expires, existing.id);
+    } else {
+      this.store.run('INSERT INTO jobs(account_id,reason,dedupe,due,account_version,schedule_version,expires) VALUES(?,?,?,?,?,?,?)',
+        account.id, reason, dedupe, now, account.version, user.schedule_version, expires);
+    }
   }
   observe(account: Account, snapshot: Snapshot, now: number) {
     this.store.transaction(() => {

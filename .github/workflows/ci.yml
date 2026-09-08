@@ -19,3 +19,4 @@ jobs:
       - run: npm run build
       - run: npm pack
       - run: docker build -t acadence:test .
+      - run: bash scripts/smoke-container.sh acadence:test

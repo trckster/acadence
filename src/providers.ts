@@ -144,6 +144,14 @@ class CodexRpc {
     throw new ProviderError('unavailable');
   }
   close() { this.child.kill('SIGKILL'); this.fail(); }
+  async finish() {
+    if (this.child.exitCode !== null || this.child.signalCode !== null) return;
+    await new Promise<void>(resolve => {
+      const timer = setTimeout(() => this.close(), 1000);
+      this.child.once('close', () => { clearTimeout(timer); resolve(); });
+      this.child.stdin.end();
+    });
+  }
 }
 
 export type ProviderAdapter = {
@@ -170,7 +178,7 @@ export class Providers implements ProviderAdapter {
         return parseCodexUsage(await rpc.call('account/rateLimits/read'));
       }
       let data = claudeCredentials.parse(credentials);
-      if (data.claudeAiOauth.expiresAt < Date.now() + 120_000) {
+      const refresh = async () => {
         const response = await fetch('https://platform.claude.com/v1/oauth/token', {
           method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
           headers: { 'content-type': 'application/json' },
@@ -182,17 +190,20 @@ export class Providers implements ProviderAdapter {
         data = { claudeAiOauth: { ...data.claudeAiOauth, accessToken: refreshed.access_token, refreshToken: refreshed.refresh_token ?? data.claudeAiOauth.refreshToken, expiresAt: Date.now() + refreshed.expires_in * 1000 } };
         save(data);
         await writeFile(file, JSON.stringify(data), { mode: 0o600 });
-      }
+      };
+      if (data.claudeAiOauth.expiresAt < Date.now() + 120_000) await refresh();
       if (action === 'open') {
         const output = await runProcess('claude', ['-p', 'Hello. Reply with hello only.', '--output-format', 'json', '--tools', '', '--strict-mcp-config', '--setting-sources', '', '--no-session-persistence', '--max-turns', '1', ...(process.env.CLAUDE_MODEL ? ['--model', process.env.CLAUDE_MODEL] : [])], cleanEnvironment(home), cwd);
         const result = JSON.parse(output);
         if (result.is_error || result.type !== 'result' || result.subtype !== 'success') throw new ProviderError('unavailable');
         return null;
       }
-      const response = await fetch('https://api.anthropic.com/api/oauth/usage', {
+      const usage = () => fetch('https://api.anthropic.com/api/oauth/usage', {
         headers: { Authorization: `Bearer ${data.claudeAiOauth.accessToken}`, 'anthropic-beta': 'oauth-2025-04-20', 'User-Agent': 'acadence/0.1.0' },
         redirect: 'error', signal: AbortSignal.timeout(30_000)
       });
+      let response = await usage();
+      if (response.status === 401) { await refresh(); response = await usage(); }
       if (!response.ok) throw new ProviderError([401, 403].includes(response.status) ? 'auth' : response.status === 429 ? 'rate_limit' : 'unavailable');
       return parseClaudeUsage(await response.json());
     } catch (error) {
@@ -200,7 +211,7 @@ export class Providers implements ProviderAdapter {
       if (error instanceof z.ZodError) throw new ProviderError('quota_schema');
       throw new ProviderError('unavailable');
     } finally {
-      rpc?.close();
+      await rpc?.finish();
       try { save(parseCredentials(provider, JSON.parse(await readFile(file, 'utf8')))); }
       finally { await rm(home, { recursive: true, force: true }); }
     }

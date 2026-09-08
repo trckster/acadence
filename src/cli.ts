@@ -29,7 +29,7 @@ async function config(): Promise<Config> {
 async function request(path: string, method = 'GET', body?: unknown, auth?: Config) {
   const current = auth ?? await config();
   const response = await fetch(validateUrl(current.url) + path, {
-    method, headers: { 'content-type': 'application/json', ...(current.token ? { authorization: `Bearer ${current.token}` } : {}) },
+    method, headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(current.token ? { authorization: `Bearer ${current.token}` } : {}) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: 'error', signal: AbortSignal.timeout(30_000)
   });
   const result = await response.json() as any;

@@ -65,6 +65,22 @@ In Coolify, add this Git repository as a **Docker Compose** application using `d
 
 Optional variables: `WORKER_CONCURRENCY` (default 4), `CODEX_MODEL`, `CLAUDE_MODEL` (otherwise provider defaults). The image pins provider CLI versions; update and test the Docker build arguments when upgrading. Container temporary credentials live on tmpfs and are removed after each operation.
 
+### Automatic Coolify redeployment
+
+GitHub sends push events directly to Coolify through a repository webhook. Coolify deploys updates to the application's configured source branch (`master`), including merged pull requests. Deployment starts independently of GitHub Actions CI and does not wait for its checks.
+
+In Coolify, set the application's source branch to `master` and enable **Advanced → Auto Deploy**. Under **Webhook → Manual Git webhooks → GitHub**, copy the webhook URL and webhook secret.
+
+In the GitHub repository's **Settings → Webhooks**, configure an active webhook with:
+
+- **Payload URL**: the Coolify manual GitHub webhook URL (`https://cool.daniil.online/webhooks/source/github/events/manual`).
+- **Content type**: `application/x-www-form-urlencoded` (matching Termorize's setup).
+- **Secret**: the GitHub webhook secret from Coolify.
+- **SSL verification**: enabled.
+- **Events**: just the `push` event.
+
+No Coolify API token or GitHub Actions deployment secrets are required. Check **Recent Deliveries** in GitHub for webhook errors and monitor deployment progress and application health in Coolify. See the [Coolify automatic deployment guide](https://coolify.io/docs/applications/ci-cd/github/auto-deploy).
+
 ## Provider support boundary
 
 Codex uses the official [app-server quota interface](https://learn.chatgpt.com/docs/app-server) and [headless credential transfer](https://learn.chatgpt.com/docs/auth). Claude quota polling uses the undocumented `/api/oauth/usage` response used by Claude Code; inference runs the unmodified CLI. Unknown quota formats raise an alert instead of guessing. Live authentication/inference requires your accounts; automated tests use provider fixtures.

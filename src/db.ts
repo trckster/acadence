@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import type { Provider, Schedule, WindowKind } from './domain.js';
 
 export type User = { id: string; telegram_id: string; timezone: string; anchors: string; schedule_version: number };
-export type Account = { id: string; user_id: string; provider: Provider; label: string; credentials: string; status: string; version: number; next_poll: number; next_session: number | null; failures: number; last_error: string | null; last_success: number | null };
+export type Account = { id: string; user_id: string; provider: Provider; category: 'personal' | 'work'; credentials: string; status: string; version: number; next_poll: number; next_session: number | null; failures: number; last_error: string | null; last_success: number | null };
 export type WindowRow = { account_id: string; kind: WindowKind; used: number; resets_at: number | null; generation: number; sampled_at: number; present: number };
 export type Job = { id: number; account_id: string; reason: string; dedupe: string; due: number; attempts: number; account_version: number; schedule_version: number; expires: number | null };
 
@@ -33,10 +33,10 @@ export class Store {
       );
       CREATE TABLE IF NOT EXISTS accounts (
         id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        provider TEXT NOT NULL CHECK(provider IN ('claude','codex')), label TEXT NOT NULL,
+        provider TEXT NOT NULL CHECK(provider IN ('claude','codex')), category TEXT NOT NULL CHECK(category IN ('personal','work')),
         credentials TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', version INTEGER NOT NULL DEFAULT 1,
         next_poll INTEGER NOT NULL DEFAULT 0, next_session INTEGER, failures INTEGER NOT NULL DEFAULT 0,
-        last_error TEXT, last_success INTEGER, UNIQUE(user_id,provider,label)
+        last_error TEXT, last_success INTEGER
       );
       CREATE TABLE IF NOT EXISTS windows (
         account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -63,6 +63,30 @@ export class Store {
       CREATE INDEX IF NOT EXISTS notifications_due ON notifications(sent,due);
       CREATE INDEX IF NOT EXISTS observations_time ON observations(sampled_at);
     `);
+    if (this.all<{ name: string }>('PRAGMA table_info(accounts)').some(column => column.name === 'label')) {
+      // Rebuild without the legacy label uniqueness constraint, preserving IDs and dependents.
+      this.db.exec('PRAGMA foreign_keys=OFF');
+      try {
+        this.transaction(() => {
+          this.db.exec(`
+            CREATE TABLE accounts_new (
+              id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              provider TEXT NOT NULL CHECK(provider IN ('claude','codex')),
+              category TEXT NOT NULL CHECK(category IN ('personal','work')),
+              credentials TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', version INTEGER NOT NULL DEFAULT 1,
+              next_poll INTEGER NOT NULL DEFAULT 0, next_session INTEGER, failures INTEGER NOT NULL DEFAULT 0,
+              last_error TEXT, last_success INTEGER
+            );
+            INSERT INTO accounts_new SELECT id,user_id,provider,
+              CASE WHEN lower(trim(label))='work' THEN 'work' ELSE 'personal' END,
+              credentials,status,version,next_poll,next_session,failures,last_error,last_success FROM accounts;
+            DROP TABLE accounts;
+            ALTER TABLE accounts_new RENAME TO accounts;
+          `);
+          if (this.all('PRAGMA foreign_key_check').length) throw new Error('Account migration failed foreign key validation');
+        });
+      } finally { this.db.exec('PRAGMA foreign_keys=ON'); }
+    }
   }
   run(sql: string, ...args: SQLInputValue[]) { return this.db.prepare(sql).run(...args); }
   get<T>(sql: string, ...args: SQLInputValue[]): T | undefined { return this.db.prepare(sql).get(...args) as T | undefined; }

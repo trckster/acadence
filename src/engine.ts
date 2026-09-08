@@ -1,7 +1,7 @@
 import { Store, type Account, type Job, type User, type WindowRow } from './db.js';
 import { anchorsAround, canContinue, FIVE, HOUR, nextAnchor, nextScheduled, resetDetected, windowRolledOver, type Snapshot } from './domain.js';
 import { accountEmail, type Credentials, type ProviderAdapter, ProviderError } from './providers.js';
-import { formatAccount, formatUsage } from './format.js';
+import { formatUsage } from './format.js';
 import { Vault } from './security.js';
 
 export class Engine {
@@ -9,6 +9,9 @@ export class Engine {
   private running = false;
   lastTick = Date.now();
   constructor(readonly store: Store, readonly vault: Vault, readonly providers: ProviderAdapter, readonly concurrency = 4) {}
+  private accountName(account: Pick<Account, 'id' | 'provider' | 'category' | 'credentials'>) {
+    return `${account.provider} / ${account.category} / ${accountEmail(this.vault.open<Credentials>(account.credentials, account.id)) ?? 'email unavailable'}`;
+  }
   enqueue(account: Account, reason: string, dedupe: string, now: number, expires: number | null = null) {
     const user = this.store.get<User>('SELECT * FROM users WHERE id=?', account.user_id)!;
     const existing = this.store.get<Job>('SELECT * FROM jobs WHERE account_id=?', account.id);
@@ -23,9 +26,6 @@ export class Engine {
       this.store.run('INSERT INTO jobs(account_id,reason,dedupe,due,account_version,schedule_version,expires) VALUES(?,?,?,?,?,?,?)',
         account.id, reason, dedupe, now, account.version, user.schedule_version, expires);
     }
-  }
-  accountName(account: Account) {
-    return formatAccount(account.provider, accountEmail(this.vault.open<Credentials>(account.credentials, account.id)));
   }
   observe(account: Account, snapshot: Snapshot, now: number) {
     this.store.transaction(() => {
@@ -80,7 +80,7 @@ export class Engine {
     if (code === 'auth') {
       this.store.run("UPDATE accounts SET status='reauth_required' WHERE id=?", account.id);
       this.store.run('DELETE FROM jobs WHERE account_id=?', account.id);
-      this.store.notify(account.user_id, account.id, `auth:${account.id}:${account.version}`, `⚠️ ${this.accountName(account)}\nAuthentication expired or was rejected. Run acadence accounts reauth.`, now);
+      this.store.notify(account.user_id, account.id, `auth:${account.id}:${account.version}`, `⚠️ ${this.accountName(account)}\nAuthentication expired or was rejected. Run acadence reauth.`, now);
     } else if (attempts >= 3 || code === 'quota_schema') {
       if (code === 'quota_schema') this.store.run("DELETE FROM jobs WHERE account_id=? AND reason IN ('anchor','scheduled','five_reset')", account.id);
       this.store.notify(account.user_id, account.id, `error:${account.id}:${code}:${Math.floor(now / (24 * HOUR))}`,

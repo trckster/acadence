@@ -8,13 +8,15 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { anchorSchema, timezoneSchema, type Provider, type Schedule } from './domain.js';
-import { claudeAccountEmail, cleanEnvironment, parseCredentials, runProcess } from './providers.js';
-import { formatAccount, formatUsage } from './format.js';
+import { accountEmail, claudeAccountEmail, cleanEnvironment, parseCredentials, runProcess } from './providers.js';
+import { formatUsage } from './format.js';
 import { select } from './select.js';
 import { fetchWithContext, responseJson, requestTarget, RequestError, formatError, providerErrorMessage } from './errors.js';
 
 process.umask(0o077);
-const program = new Command().name('acadence').description('Manage Claude Code and Codex usage windows');
+const version = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
+const program = new Command().name('acadence').description('Manage Claude Code and Codex usage windows')
+  .addHelpText('before', `Acadence ${version}\n`);
 const configDir = join(homedir(), '.config', 'acadence');
 const configFile = join(configDir, 'client.json');
 const production = 'https://acadence.daniil.online';
@@ -112,24 +114,28 @@ program.command('logout').option('--all', 'Revoke all CLI sessions').action(asyn
   await rm(configFile, { force: true });
   console.log('Signed out');
 });
-const accounts = program.command('accounts').description('Connect and manage provider accounts');
-async function connectAccount(provider: string) {
+async function connectAccount(provider: string, options: { type?: string }) {
   const type = z.enum(['claude','codex']).parse(provider);
   await config();
+  const category = options.type === undefined
+    ? await select('Choose an account type:', [{ label: 'Personal', value: 'personal' }, { label: 'Work', value: 'work' }])
+    : z.enum(['personal','work']).parse(options.type);
+  if (!category) { console.log('Cancelled'); return; }
   await credentials(type, async data => {
-    await request('/v1/accounts', 'POST', { provider: type, credentials: data });
-    console.log(`Connected ${type}`);
+    const email = accountEmail(parseCredentials(type, data));
+    if (!email) throw new Error('Could not determine account email; sign in again');
+    await request('/v1/accounts', 'POST', { provider: type, category, credentials: data });
+    console.log(`Connected ${type} / ${category} / ${email}`);
   });
 }
-accounts.command('connect <provider>').action(connectAccount);
-program.command('connect').description('Choose a provider and connect an account').action(async () => {
+program.command('connect [provider]').description('Connect an account, optionally choosing the provider directly').option('--type <type>', 'Account type: personal or work').action(async (selectedProvider: string | undefined, options) => {
   await config();
-  const provider = await select<Provider>('Choose an account provider:', [
+  const provider = selectedProvider ?? await select<Provider>('Choose an account provider:', [
     { label: 'Claude Code', value: 'claude' },
     { label: 'Codex', value: 'codex' }
   ]);
   if (!provider) { console.log('Cancelled'); return; }
-  await connectAccount(provider);
+  await connectAccount(provider, options);
 });
 async function showAccounts() {
   const rows = await request('/v1/accounts');
@@ -147,7 +153,7 @@ async function showAccounts() {
   if (!rows.length) { console.log('No accounts connected'); return; }
   for (const row of rows) {
     if (row !== rows[0]) console.log();
-    console.log(formatAccount(row.provider, row.email));
+    console.log(`${row.provider} / ${row.category} / ${row.email ?? 'email unavailable'}`);
     console.log(`    ${row.status.replaceAll('_', ' ')}${row.lastError ? ` (${providerErrorMessage(row.lastError)})` : ''}`);
     if (row.refreshError) console.log(`    Usage unavailable: ${providerErrorMessage(row.refreshError)}`);
     for (const [kind, label] of [['five_hour', '5h'], ['weekly', 'Week']]) {
@@ -159,13 +165,13 @@ async function showAccounts() {
     if (row.pending.length) console.log(`    ${row.pending.length} pending operation(s)`);
   }
 }
-accounts.command('list').description('Fetch current usage and status for every connected account').action(showAccounts);
+program.command('see').description('Fetch current usage and status for every connected account').action(showAccounts);
 async function chooseAccount(action: string) {
   const rows = await request('/v1/accounts');
   if (!rows.length) { console.log('No accounts connected'); return; }
   console.log(`Choose an account to ${action}:`);
   rows.forEach((row: any, index: number) => {
-    console.log(`  ${index + 1}. ${formatAccount(row.provider, row.email)} (${row.status.replaceAll('_', ' ')})`);
+    console.log(`  ${index + 1}. ${row.provider} / ${row.category} / ${row.email ?? 'email unavailable'} (${row.status.replaceAll('_', ' ')})`);
   });
   const input = createInterface({ input: process.stdin, output: process.stdout });
   const prompt = () => process.stdout.write('Account number (Enter to cancel): ');
@@ -182,13 +188,13 @@ async function chooseAccount(action: string) {
     console.log('Cancelled');
   } finally { input.close(); }
 }
-accounts.command('disconnect').description('Choose an account to disconnect').action(async () => {
+program.command('disconnect').description('Choose an account to disconnect').action(async () => {
   const account = await chooseAccount('disconnect');
   if (!account) return;
   await request(`/v1/accounts/${encodeURIComponent(account.id)}`, 'DELETE');
   console.log('Disconnected');
 });
-accounts.command('reauth').description('Choose an account to reauthenticate').action(async () => {
+program.command('reauth').description('Choose an account to reauthenticate').action(async () => {
   const account = await chooseAccount('reauthenticate');
   if (!account) return;
   await credentials(account.provider, async data => {
@@ -208,7 +214,7 @@ schedule.command('remove <time>').action(async time => { anchorSchema.parse(time
 schedule.command('timezone <zone>').action(async zone => { timezoneSchema.parse(zone); display(await request('/v1/schedule', 'PUT', { ...await request('/v1/schedule'), timezone: zone })); });
 program.command('trigger').description('Queue an immediate request for every connected account').action(async () => {
   const result = await request('/v1/trigger', 'POST', {});
-  console.log(`Queued ${result.queued} account(s). Check acadence accounts list for status.`);
+  console.log(`Queued ${result.queued} account(s). Check acadence see for status.`);
 });
 function configureHelp(command: Command) {
   command.helpOption(false).addHelpCommand(false);
@@ -225,7 +231,7 @@ function configureHelp(command: Command) {
     });
 }
 configureHelp(program);
-if (process.argv.length === 2) console.log(JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version);
+if (process.argv.length === 2) program.outputHelp();
 else program.parseAsync().catch(error => {
   console.error(error instanceof z.ZodError ? 'Invalid input or unsupported provider credential format' : formatError(error));
   process.exitCode = 1;

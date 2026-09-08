@@ -22,20 +22,26 @@ async function runCli(args: string[], env: NodeJS.ProcessEnv, input = ''): Promi
 }
 
 test('help commands work at every level and removed commands and flags are rejected', async () => {
-  assert.equal((await runCli([], process.env)).trim(), JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version);
-  for (const path of [[], ['accounts'], ['accounts', 'disconnect'], ['schedule', 'add']]) {
+  const help = await runCli(['help'], process.env);
+  assert.equal(await runCli([], process.env), help);
+  const version = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
+  assert.ok(help.startsWith(`Acadence ${version}\n`));
+  for (const command of ['see', 'connect', 'disconnect', 'reauth']) assert.ok(help.includes(command));
+  assert.doesNotMatch(help, /^  accounts\b/m);
+  await assert.rejects(runCli(['accounts', 'list'], process.env), /unknown command/);
+  for (const path of [[], ['see'], ['connect'], ['disconnect'], ['reauth'], ['schedule', 'add']]) {
     const output = await runCli(['help', ...path], process.env);
     assert.match(output, /Usage: acadence/);
-    assert.doesNotMatch(output, /--help|--version|\bOptions:|\bupdate\b|<account>|<id>/);
+    assert.doesNotMatch(output, /--help|--version|\bupdate\b|<account>|<id>/);
   }
-  assert.match(await runCli(['accounts', 'help', 'reauth'], process.env), /Choose an account/);
-  for (const args of [['--version'], ['-V'], ['usage'], ['schedule', 'update', '06:00', '07:00'], ['help', 'missing'],
-    ...[[], ['accounts'], ['accounts', 'disconnect'], ['schedule', 'add'], ['help']].flatMap(path => ['--help', '-h'].map(flag => [...path, flag]))]) {
+  assert.match(await runCli(['reauth', 'help'], process.env), /Choose an account/);
+  for (const args of [['accounts'], ['accounts', 'reauth'], ['accounts', 'connect'], ['accounts', 'disconnect'], ['--version'], ['-V'], ['usage'], ['schedule', 'update', '06:00', '07:00'], ['help', 'missing'],
+    ...[[], ['connect'], ['disconnect'], ['reauth'], ['schedule', 'add'], ['help']].flatMap(path => ['--help', '-h'].map(flag => [...path, flag]))]) {
     await assert.rejects(runCli(args, process.env), /unknown (?:command|option)|Unknown command/);
   }
 });
 
-test('accounts list fetches owned accounts and never displays stale windows', async () => {
+test('see fetches owned accounts and never displays stale windows', async () => {
   const home = await mkdtemp(join(tmpdir(), 'acadence-usage-test-'));
   const store = new Store(':memory:');
   const vault = new Vault(Buffer.alloc(32, 4).toString('base64'));
@@ -52,8 +58,8 @@ test('accounts list fetches owned accounts and never displays stale windows', as
   try {
     const url = await app.listen({ host: '127.0.0.1', port: 0 });
     const env = { ...process.env, HOME: home, TZ: 'UTC', LANG: 'en_US.UTF-8' };
-    const cli = (...args: string[]) => runCli(args.length ? args : ['accounts', 'list'], env);
-    const choose = (action: string, input: string) => runCli(['accounts', action], env, input);
+    const cli = (...args: string[]) => runCli(args.length ? args : ['see'], env);
+    const choose = (action: string, input: string) => runCli([action], env, input);
     await assert.rejects(cli(), /Run acadence login first/);
     const token = secret();
     store.run("INSERT INTO users(id,telegram_id,timezone) VALUES('owner','1','UTC'),('other','2','UTC')");
@@ -62,14 +68,14 @@ test('accounts list fetches owned accounts and never displays stale windows', as
     await mkdir(configDir, { recursive: true });
     await writeFile(join(configDir, 'client.json'), JSON.stringify({ url, token }));
     assert.equal((await cli()).trim(), 'No accounts connected');
-    for (const [id, user, provider, label, status, error] of [
+    for (const [id, user, provider, category, status, error] of [
       ['personal', 'owner', 'codex', 'personal', 'active', null],
       ['work', 'owner', 'claude', 'work', 'reauth_required', 'auth'],
-      ['new', 'owner', 'codex', 'new', 'active', null],
-      ['foreign', 'other', 'codex', 'private-other-user', 'active', null]
+      ['new', 'owner', 'codex', 'personal', 'active', null],
+      ['foreign', 'other', 'codex', 'personal', 'active', null]
     ]) {
-      store.run('INSERT INTO accounts(id,user_id,provider,label,status,last_error,credentials) VALUES(?,?,?,?,?,?,?)',
-        id!, user!, provider!, label!, status!, error!, vault.seal(provider === 'claude'
+      store.run('INSERT INTO accounts(id,user_id,provider,category,status,last_error,credentials) VALUES(?,?,?,?,?,?,?)',
+        id!, user!, provider!, category!, status!, error!, vault.seal(provider === 'claude'
           ? { claudeAiOauth: {}, email: 'work@example.com' }
           : { tokens: { id_token: id === 'personal' ? `header.${Buffer.from(JSON.stringify({ email: 'personal@example.com' })).toString('base64url')}.signature` : 'unavailable' } }, id!));
     }
@@ -85,29 +91,29 @@ test('accounts list fetches owned accounts and never displays stale windows', as
       store.run('INSERT INTO windows(account_id,kind,used,resets_at,sampled_at,present) VALUES(?,?,?,?,?,?)', id, kind, used, reset, sampledAt, present);
     }
     const output = await cli();
-    assert.match(output, /codex: personal@example.com\n    active/);
+    assert.match(output, /codex \/ personal \/ personal@example.com\n    active/);
     assert.match(output, /5h: 30% used; resets 2030-09-08 17:00/);
     assert.match(output, /Week: 45% used; resets not active/);
     assert.doesNotMatch(output, /\b(?:AM|PM|checked)\b/);
-    assert.match(output, /claude: work@example.com\n    reauth required \(authentication expired or rejected; run acadence accounts reauth\)/);
+    assert.match(output, /claude \/ work \/ work@example.com\n    reauth required \(authentication expired or rejected; run acadence reauth\)/);
     assert.match(output, /Usage unavailable: reauthentication required/);
-    assert.match(output, /codex: email unavailable\n    active\n    5h: usage unavailable\n    Week: usage unavailable/);
+    assert.match(output, /codex \/ personal \/ email unavailable\n    active\n    5h: usage unavailable\n    Week: usage unavailable/);
     assert.doesNotMatch(output, /private-other-user|25%|42\.5%|100%|88%|99%|credential-must-not-appear/);
     assert.equal(providerCalls, 2);
-    assert.equal(await cli('accounts', 'list'), output);
+    assert.equal(await cli('see'), output);
     assert.equal(providerCalls, 4);
     store.run('UPDATE accounts SET credentials=? WHERE id=?', vault.seal({ tokens: { id_token: `header.${Buffer.from(JSON.stringify({ email: 'work@example.com' })).toString('base64url')}.signature` } }, 'new'), 'new');
     for (const action of ['disconnect', 'reauth']) {
-      await assert.rejects(cli('accounts', action, 'new'), /too many arguments/);
-      await assert.rejects(cli('accounts', action, '--provider', 'codex'), /unknown option/);
+      await assert.rejects(cli(action, 'new'), /too many arguments/);
+      await assert.rejects(cli(action, '--provider', 'codex'), /unknown option/);
       assert.match(await choose(action, '\n'), /Cancelled/);
       assert.match(await choose(action, ''), /Cancelled/);
     }
     assert.equal(store.all('SELECT id FROM accounts').length, 4);
-    const selection = await choose('disconnect', '0\n99\nabc\n1\n');
+    const selection = await choose('disconnect', '0\n99\nabc\n2\n');
     assert.match(selection, /Enter a number from 1 to 3/);
-    assert.match(selection, /1\. codex: work@example.com/);
-    assert.match(selection, /3\. claude: work@example.com/);
+    assert.match(selection, /2\. codex \/ personal \/ work@example.com/);
+    assert.match(selection, /1\. claude \/ work \/ work@example.com/);
     assert.doesNotMatch(selection, /private-other-user|foreign/);
     assert.equal(store.get('SELECT id FROM accounts WHERE id=?', 'new'), undefined);
     await choose('disconnect', '1\n');
@@ -166,22 +172,29 @@ fs.writeFileSync(process.env.CODEX_HOME + '/auth.json', JSON.stringify({auth_mod
     assert.match(await runCli(['connect'], env, '\x03'), /Cancelled/);
     assert.match(await runCli(['connect'], env), /Cancelled/);
     assert.equal(store.all('SELECT * FROM accounts').length, 0);
-    const connected = await runCli(['connect'], env, '\x1b[B\x1b[A\x1b[A\r');
+    const connected = await runCli(['connect', '--type', 'personal'], env, '\x1b[B\x1b[A\x1b[A\r');
     assert.match(connected, /❯ Codex/);
     assert.doesNotMatch(connected, /Provider number/);
-    assert.match(connected, /Connected codex/);
+    assert.match(connected, /Connected codex \/ personal \/ test@example.com/);
     assert.ok(!connected.includes('test-access'));
+    await assert.rejects(cli('connect', 'codex', '--label', 'second'), /unknown option/);
+    await assert.rejects(cli('connect', 'codex', '--type', 'other'), /Invalid input/);
+    await assert.rejects(cli('connect', 'codex', '--type', 'personal'), /already connected/);
+    assert.match(await runCli(['connect', 'codex'], env, '\x1b'), /Cancelled/);
+    const work = await runCli(['connect', 'codex'], env, '\x1b[B\r');
+    assert.match(work, /Connected codex \/ work \/ test@example.com/);
+    await runCli(['disconnect'], env, '2\n');
     await cli('schedule','add','06:00');
     await cli('schedule','remove','06:00');
     await cli('schedule','add','07:00');
     assert.match(await cli('schedule','show'), /07:00/);
     assert.match(await cli('trigger'), /Queued 1/);
-    assert.match(await cli('accounts','list'), /codex: test@example.com/);
+    assert.match(await cli('see'), /codex \/ personal \/ test@example.com/);
     const id = store.get<{ id: string }>('SELECT id FROM accounts')!.id;
-    const reauth = await runCli(['accounts', 'reauth'], env, '1\n');
+    const reauth = await runCli(['reauth'], env, '1\n');
     assert.match(reauth, /Authentication updated/);
     assert.doesNotMatch(reauth, new RegExp(id));
-    const disconnected = await runCli(['accounts', 'disconnect'], env, '1\n');
+    const disconnected = await runCli(['disconnect'], env, '1\n');
     assert.match(disconnected, /Disconnected/);
     assert.doesNotMatch(disconnected, new RegExp(id));
     assert.equal(store.get('SELECT id FROM accounts WHERE id=?', id), undefined);
@@ -197,7 +210,7 @@ test('CLI request errors show destination, status and cause, including usage ref
   let body = '<html>upstream-private-detail</html>';
   const server = createServer((request, response) => {
     if (request.url === '/v1/accounts') {
-      response.end(JSON.stringify([{ id: 'test', provider: 'claude', label: 'test', status: 'active', pending: [] }]));
+      response.end(JSON.stringify([{ id: 'test', provider: 'claude', category: 'personal', status: 'active', pending: [] }]));
     } else { response.writeHead(status); response.end(body); }
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -222,7 +235,7 @@ test('CLI request errors show destination, status and cause, including usage ref
     const dir = join(home, '.config', 'acadence');
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'client.json'), JSON.stringify({ url, token: 'a'.repeat(43) }));
-    assert.match(await runCli(['accounts', 'list'], env), /Usage unavailable: POST http:\/\/127\.0\.0\.1:\d+\/v1\/accounts\/test\/usage: HTTP 503/);
+    assert.match(await runCli(['see'], env), /Usage unavailable: POST http:\/\/127\.0\.0\.1:\d+\/v1\/accounts\/test\/usage: HTTP 503/);
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     await assert.rejects(runCli(['login', '--api', url], env), /POST http:\/\/127\.0\.0\.1:\d+\/v1\/auth\/device: connection refused \(ECONNREFUSED\)/);
   } finally {

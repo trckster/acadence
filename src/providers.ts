@@ -23,7 +23,7 @@ export function parseCredentials(provider: Provider, value: unknown): Credential
   return provider === 'claude' ? claudeCredentials.parse(value) : codexCredentials.parse(value);
 }
 
-// Display metadata only: never use an email claim to authorize account access.
+// Used for display and duplicate detection within an owner; never authorizes account access.
 export function accountEmail(credentials: Credentials): string | null {
   try {
     const value = 'tokens' in credentials

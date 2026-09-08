@@ -2,7 +2,7 @@ services:
   acadence:
     build: .
     restart: unless-stopped
-    stop_grace_period: 3m
+    stop_grace_period: 5m
     expose:
       - "3000"
     environment:

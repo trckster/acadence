@@ -79,12 +79,14 @@ export function runProcess(command: string, args: string[], env: NodeJS.ProcessE
 
 class CodexRpc {
   private child;
+  private exited: Promise<void>;
   private sequence = 0;
   private pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
   private events: any[] = [];
   private closed = false;
   constructor(home: string, cwd: string) {
     this.child = spawn('codex', ['app-server'], { env: cleanEnvironment(home), cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    this.exited = new Promise(resolve => this.child.once('close', () => resolve()));
     this.child.stderr.resume();
     createInterface({ input: this.child.stdout }).on('line', line => {
       if (line.length > 2_000_000) { this.close(); return; }
@@ -145,12 +147,9 @@ class CodexRpc {
   }
   close() { this.child.kill('SIGKILL'); this.fail(); }
   async finish() {
-    if (this.child.exitCode !== null || this.child.signalCode !== null) return;
-    await new Promise<void>(resolve => {
-      const timer = setTimeout(() => this.close(), 1000);
-      this.child.once('close', () => { clearTimeout(timer); resolve(); });
-      this.child.stdin.end();
-    });
+    const timer = setTimeout(() => this.close(), 1000);
+    this.child.stdin.end();
+    try { await this.exited; } finally { clearTimeout(timer); }
   }
 }
 
@@ -168,6 +167,7 @@ export class Providers implements ProviderAdapter {
     await mkdir(cwd, { mode: 0o700 });
     await writeFile(file, JSON.stringify(credentials), { mode: 0o600 });
     let rpc: CodexRpc | undefined;
+    let failed = false;
     try {
       if (provider === 'codex') {
         await writeFile(join(config, 'config.toml'), 'cli_auth_credentials_store = "file"\napproval_policy = "never"\nsandbox_mode = "read-only"\n[features]\nshell_tool = false\n', { mode: 0o600 });
@@ -207,12 +207,14 @@ export class Providers implements ProviderAdapter {
       if (!response.ok) throw new ProviderError([401, 403].includes(response.status) ? 'auth' : response.status === 429 ? 'rate_limit' : 'unavailable');
       return parseClaudeUsage(await response.json());
     } catch (error) {
+      failed = true;
       if (error instanceof ProviderError) throw error;
       if (error instanceof z.ZodError) throw new ProviderError('quota_schema');
       throw new ProviderError('unavailable');
     } finally {
       await rpc?.finish();
       try { save(parseCredentials(provider, JSON.parse(await readFile(file, 'utf8')))); }
+      catch { if (!failed) throw new ProviderError('auth'); }
       finally { await rm(home, { recursive: true, force: true }); }
     }
   }

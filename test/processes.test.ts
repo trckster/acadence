@@ -80,3 +80,10 @@ test('Claude refreshes on 401 and persists rotation before retrying quota lookup
     assert.equal((saved.at(-1) as typeof credentials).claudeAiOauth.refreshToken, 'rotated-refresh');
   } finally { globalThis.fetch = originalFetch; }
 });
+test('missing provider executable fails promptly without leaking an unresolved process wait', async () => {
+  const previousPath = process.env.PATH;
+  try {
+    process.env.PATH = '/nonexistent/acadence-test-bin';
+    await assert.rejects(new Providers().execute('codex', codex, 'poll', () => {}), /unavailable/);
+  } finally { process.env.PATH = previousPath; }
+});

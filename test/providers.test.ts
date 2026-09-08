@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { accountEmail, parseClaudeUsage, parseCodexUsage, parseCredentials, cleanEnvironment } from '../src/providers.js';
+import { accountCategory, accountEmail, parseClaudeUsage, parseCodexUsage, parseCredentials, cleanEnvironment } from '../src/providers.js';
 
 test('account emails are optional display metadata and reject malformed claims', () => {
   const codex = (claim: unknown) => parseCredentials('codex', { tokens: {
@@ -53,4 +53,26 @@ test('provider processes never inherit backend secrets or user provider configur
   assert.equal(env.HOME, '/isolated');
   assert.equal(env.CODEX_HOME, '/isolated/.codex');
   delete process.env.ACADENCE_TEST_SECRET;
+});
+
+test('account category uses provider subscription metadata and leaves unknown plans undecided', () => {
+  const codex = (claims: unknown) => parseCredentials('codex', { tokens: {
+    access_token: 'a', refresh_token: 'r',
+    id_token: `header.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.signature`
+  } });
+  for (const plan of ['free', 'go', 'plus', 'pro', 'prolite', ' PLUS ']) {
+    assert.equal(accountCategory(codex({ 'https://api.openai.com/auth': { chatgpt_plan_type: plan } })), 'personal');
+  }
+  for (const plan of ['team', 'business', 'enterprise', 'edu', 'self_serve_business_usage_based']) {
+    assert.equal(accountCategory(codex({ 'https://api.openai.com/auth': { chatgpt_plan_type: plan } })), 'work');
+  }
+  for (const claims of [null, {}, { email: 'employee@company.com' }, { 'https://api.openai.com/auth': { chatgpt_plan_type: 1 } }, { 'https://api.openai.com/auth': { chatgpt_plan_type: 'future' } }]) {
+    assert.equal(accountCategory(codex(claims)), undefined);
+  }
+  assert.equal(accountCategory(parseCredentials('codex', { tokens: { access_token: 'a', refresh_token: 'r', id_token: 'bad' } })), undefined);
+  for (const [plan, expected] of [['pro', 'personal'], ['max', 'personal'], ['team', 'work'], ['enterprise', 'work'], [null, undefined], ['future', undefined], ['plus', undefined]] as const) {
+    assert.equal(accountCategory(parseCredentials('claude', { claudeAiOauth: {
+      accessToken: 'a', refreshToken: 'r', expiresAt: 0, scopes: [], subscriptionType: plan
+    } })), expected);
+  }
 });

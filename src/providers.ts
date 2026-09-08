@@ -34,6 +34,28 @@ export function accountEmail(credentials: Credentials): string | null {
   } catch { return null; }
 }
 
+// Subscription metadata is a labeling hint, never proof of authorization or employment.
+export function accountCategory(credentials: Credentials): 'personal' | 'work' | undefined {
+  let plan: unknown;
+  if ('claudeAiOauth' in credentials) plan = credentials.claudeAiOauth.subscriptionType;
+  else {
+    try {
+      const claims = JSON.parse(Buffer.from(credentials.tokens.id_token.split('.')[1]!, 'base64url').toString('utf8'));
+      plan = claims?.['https://api.openai.com/auth']?.chatgpt_plan_type;
+    } catch { return; }
+  }
+  if (typeof plan !== 'string') return;
+  const normalized = plan.trim().toLowerCase();
+  const work = 'claudeAiOauth' in credentials
+    ? ['team', 'enterprise']
+    : ['team', 'business', 'enterprise', 'edu', 'self_serve_business_usage_based'];
+  const personal = 'claudeAiOauth' in credentials
+    ? ['pro', 'max']
+    : ['free', 'go', 'plus', 'pro', 'prolite'];
+  if (work.includes(normalized)) return 'work';
+  if (personal.includes(normalized)) return 'personal';
+}
+
 export async function claudeAccountEmail(home: string): Promise<string | undefined> {
   try {
     const status = JSON.parse(await runProcess('claude', ['auth', 'status', '--json'], cleanEnvironment(home), home));

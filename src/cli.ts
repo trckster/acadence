@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { anchorSchema, timezoneSchema, type Provider, type Schedule } from './domain.js';
 import { claudeAccountEmail, cleanEnvironment, parseCredentials, runProcess } from './providers.js';
-import { formatReset } from './format.js';
+import { formatAccount, formatUsage } from './format.js';
 import { select } from './select.js';
 import { fetchWithContext, responseJson, requestTarget, RequestError, formatError, providerErrorMessage } from './errors.js';
 
@@ -113,23 +113,23 @@ program.command('logout').option('--all', 'Revoke all CLI sessions').action(asyn
   console.log('Signed out');
 });
 const accounts = program.command('accounts').description('Connect and manage provider accounts');
-async function connectAccount(provider: string, options: { label: string }) {
+async function connectAccount(provider: string) {
   const type = z.enum(['claude','codex']).parse(provider);
   await config();
   await credentials(type, async data => {
-    await request('/v1/accounts', 'POST', { provider: type, label: options.label, credentials: data });
-    console.log(`Connected ${type} / ${options.label}`);
+    await request('/v1/accounts', 'POST', { provider: type, credentials: data });
+    console.log(`Connected ${type}`);
   });
 }
-accounts.command('connect <provider>').option('--label <name>', 'Account name', 'default').action(connectAccount);
-program.command('connect').description('Choose a provider and connect an account').option('--label <name>', 'Account name', 'default').action(async options => {
+accounts.command('connect <provider>').action(connectAccount);
+program.command('connect').description('Choose a provider and connect an account').action(async () => {
   await config();
   const provider = await select<Provider>('Choose an account provider:', [
     { label: 'Claude Code', value: 'claude' },
     { label: 'Codex', value: 'codex' }
   ]);
   if (!provider) { console.log('Cancelled'); return; }
-  await connectAccount(provider, options);
+  await connectAccount(provider);
 });
 async function showAccounts() {
   const rows = await request('/v1/accounts');
@@ -147,13 +147,13 @@ async function showAccounts() {
   if (!rows.length) { console.log('No accounts connected'); return; }
   for (const row of rows) {
     if (row !== rows[0]) console.log();
-    console.log(`${row.provider} / ${row.label}: ${row.email ?? 'email unavailable'}`);
+    console.log(formatAccount(row.provider, row.email));
     console.log(`    ${row.status.replaceAll('_', ' ')}${row.lastError ? ` (${providerErrorMessage(row.lastError)})` : ''}`);
     if (row.refreshError) console.log(`    Usage unavailable: ${providerErrorMessage(row.refreshError)}`);
     for (const [kind, label] of [['five_hour', '5h'], ['weekly', 'Week']]) {
       const limit = row.limits.find((item: any) => item.kind === kind);
       console.log(limit
-        ? `    ${label}: ${limit.used}% used; resets ${formatReset(limit.resetsAt, now)}`
+        ? `    ${formatUsage(limit, now)}`
         : `    ${label}: usage unavailable`);
     }
     if (row.pending.length) console.log(`    ${row.pending.length} pending operation(s)`);
@@ -165,7 +165,7 @@ async function chooseAccount(action: string) {
   if (!rows.length) { console.log('No accounts connected'); return; }
   console.log(`Choose an account to ${action}:`);
   rows.forEach((row: any, index: number) => {
-    console.log(`  ${index + 1}. ${row.provider} / ${row.label}: ${row.email ?? 'email unavailable'} (${row.status.replaceAll('_', ' ')})`);
+    console.log(`  ${index + 1}. ${formatAccount(row.provider, row.email)} (${row.status.replaceAll('_', ' ')})`);
   });
   const input = createInterface({ input: process.stdin, output: process.stdout });
   const prompt = () => process.stdout.write('Account number (Enter to cancel): ');

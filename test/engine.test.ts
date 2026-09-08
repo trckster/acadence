@@ -22,7 +22,7 @@ function fixture(provider?: ProviderAdapter, path = ':memory:') {
 test('weekly resets notify and open immediately even with an anchor nearby', () => {
   const { store, account, engine } = fixture();
   const now = Date.parse('2026-09-08T12:00:00Z');
-  engine.observe(account(), { windows: [{ kind: 'five_hour', used: 70, resetsAt: now - 1 }, { kind: 'weekly', used: 80, resetsAt: now - 1 }] }, now - HOUR);
+  engine.observe(account(), { windows: [{ kind: 'five_hour', used: 70, resetsAt: now + HOUR }, { kind: 'weekly', used: 80, resetsAt: now + HOUR }] }, now - HOUR);
   engine.observe(account(), { windows: [{ kind: 'five_hour', used: 0, resetsAt: now + FIVE }, { kind: 'weekly', used: 0, resetsAt: now + WEEK }] }, now);
   assert.equal(store.all('SELECT * FROM notifications').length, 2);
   assert.equal(store.all<Job>('SELECT * FROM jobs')[0]!.reason, 'weekly_reset');
@@ -34,7 +34,7 @@ test('weekly resets notify and open immediately even with an anchor nearby', () 
 test('five-hour reset waits for a nearby anchor and absence cancels continuations', () => {
   const { store, account, engine } = fixture();
   const now = Date.parse('2026-09-08T12:00:00Z');
-  engine.observe(account(), { windows: [{ kind: 'five_hour', used: 70, resetsAt: now - 1 }] }, now - HOUR);
+  engine.observe(account(), { windows: [{ kind: 'five_hour', used: 70, resetsAt: now + HOUR }] }, now - HOUR);
   engine.observe(account(), { windows: [{ kind: 'five_hour', used: 0, resetsAt: now + FIVE }] }, now);
   assert.equal(store.all('SELECT * FROM jobs').length, 0);
   assert.equal(account().next_session, Date.parse('2026-09-08T13:00:00Z'));
@@ -168,5 +168,72 @@ test('slow provider operations cannot prevent another account anchor from being 
   assert.equal(store.get<Job>("SELECT * FROM jobs WHERE account_id='b'")?.reason, 'anchor');
   finish();
   await tick;
+  store.close();
+});
+
+test('ordinary expiry, idle clearing and timestamp drift do not notify or open', () => {
+  const { store, account, engine } = fixture();
+  const now = Date.parse('2026-09-08T12:00:00Z');
+  for (const kind of ['five_hour', 'weekly'] as const) {
+    engine.observe(account(), { windows: [{ kind, used: 70, resetsAt: now }] }, now - HOUR);
+    engine.observe(account(), { windows: [{ kind, used: 0, resetsAt: null }] }, now);
+    engine.observe(account(), { windows: [{ kind, used: 1, resetsAt: now + FIVE }] }, now + 1000);
+    engine.observe(account(), { windows: [{ kind, used: 1, resetsAt: now + FIVE + 723 }] }, now + 2000);
+  }
+  assert.equal(store.all('SELECT * FROM notifications').length, 0);
+  assert.equal(store.all('SELECT * FROM jobs').length, 0);
+  store.close();
+});
+
+test('reminders survive timestamp drift and restart, and repeat for the next window', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'acadence-reminders-'));
+  try {
+    const path = join(directory, 'test.sqlite');
+    const { store, account, engine } = fixture(undefined, path);
+    const now = Date.parse('2026-09-08T12:00:00Z');
+    engine.observe(account(), { windows: [{ kind: 'five_hour', used: 20, resetsAt: now + HOUR }] }, now);
+    engine.reminders(now);
+    for (const drift of [-30_277, -30_040, -30_004]) {
+      engine.observe(account(), { windows: [{ kind: 'five_hour', used: 20, resetsAt: now + HOUR + drift }] }, now + 5000);
+      engine.reminders(now + 5000);
+    }
+    assert.deepEqual(store.all<{ body: string }>('SELECT body FROM notifications').map(n => n.body), [
+      'codex: email unavailable\n⏳ 5h: 20% used; resets in 1h 0m'
+    ]);
+    store.close();
+    const recovered = new Store(path);
+    const worker = new Engine(recovered, vault, { execute: async () => null });
+    worker.reminders(now + 10_000);
+    assert.equal(recovered.all('SELECT * FROM notifications').length, 1);
+    worker.observe(recovered.get<Account>("SELECT * FROM accounts WHERE id='a'")!, {
+      windows: [{ kind: 'five_hour', used: 0, resetsAt: now + HOUR + FIVE }]
+    }, now + HOUR);
+    worker.reminders(now + FIVE);
+    assert.equal(recovered.all('SELECT * FROM notifications').length, 2);
+    assert.equal(recovered.all('SELECT * FROM jobs').length, 0);
+    recovered.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('notifications identify the provider account and format dates in the user timezone', () => {
+  const { store, account, engine } = fixture();
+  store.run("UPDATE users SET timezone='Europe/Rome'");
+  const idToken = `header.${Buffer.from(JSON.stringify({ email: 'you@example.com' })).toString('base64url')}.signature`;
+  store.run('UPDATE accounts SET credentials=?', vault.seal({ ...credentials, tokens: { ...credentials.tokens, id_token: idToken } }, 'a'));
+  const now = Date.parse('2026-09-08T12:00:00Z');
+  engine.observe(account(), { windows: [{ kind: 'weekly', used: 80, resetsAt: now + WEEK }] }, now - HOUR);
+  engine.observe(account(), { windows: [{ kind: 'weekly', used: 0, resetsAt: now + WEEK }] }, now);
+  assert.equal(store.get<{ body: string }>('SELECT body FROM notifications')!.body,
+    'codex: you@example.com\n🎁 Quota restored before the scheduled reset.\nWeek: 0% used; resets 2026-09-15 14:00');
+  store.close();
+});
+
+test('existing reminder keys from earlier versions suppress duplicate delivery', () => {
+  const { store, account, engine } = fixture();
+  const now = Date.now();
+  engine.observe(account(), { windows: [{ kind: 'five_hour', used: 20, resetsAt: now + HOUR }] }, now);
+  store.notify('u', 'a', `reminder:a:five_hour:0:${now + HOUR + 723}`, 'Already delivered', now);
+  engine.reminders(now);
+  assert.equal(store.all('SELECT * FROM notifications').length, 1);
   store.close();
 });

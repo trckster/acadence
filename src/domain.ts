@@ -53,11 +53,17 @@ export function nextScheduled(schedule: Schedule, after: number): number | null 
 }
 
 export function resetDetected(previous: Window, current: Window, now: number): boolean {
-  if (previous.kind !== current.kind) return false;
-  const advanced = previous.resetsAt !== null && current.resetsAt !== null &&
-    current.resetsAt > previous.resetsAt + 60_000 && previous.resetsAt <= now;
-  const cleared = previous.resetsAt !== null && previous.resetsAt <= now &&
-    current.resetsAt === null && current.used === 0;
-  const quotaRestored = current.used + 0.5 < previous.used;
-  return advanced || cleared || quotaRestored;
+  // A provider grant restores quota while the observed window is still active.
+  // Allow a minute for provider clock/expiry jitter at the ordinary boundary.
+  return previous.kind === current.kind && previous.resetsAt !== null &&
+    previous.resetsAt > now + 60_000 && current.used + 0.5 < previous.used;
+}
+
+export function windowRolledOver(previous: Window, current: Window, now: number): boolean {
+  return previous.kind === current.kind && previous.resetsAt !== null &&
+    previous.resetsAt <= now + 60_000 && (
+      current.used + 0.5 < previous.used ||
+      current.resetsAt === null && current.used === 0 ||
+      current.resetsAt !== null && current.resetsAt > previous.resetsAt + 60_000
+    );
 }

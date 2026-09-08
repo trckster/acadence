@@ -72,7 +72,7 @@ export async function createApi(store: Store, vault: Vault, engine: Engine, botU
   });
   app.get('/v1/accounts', async request => {
     const user = authenticate(request.headers.authorization);
-    return store.all<Account>('SELECT * FROM accounts WHERE user_id=? ORDER BY label', user.id).map(account => ({
+    return store.all<Account>('SELECT * FROM accounts WHERE user_id=? ORDER BY id', user.id).map(account => ({
       id: account.id, provider: account.provider, label: account.label, status: account.status, lastError: account.last_error,
       email: accountEmail(vault.open<Credentials>(account.credentials, account.id)),
       nextSession: account.next_session, lastSuccess: account.last_success,
@@ -82,12 +82,12 @@ export async function createApi(store: Store, vault: Vault, engine: Engine, botU
   });
   app.post('/v1/accounts', async request => {
     const user = authenticate(request.headers.authorization);
-    const body = z.object({ provider: z.enum(['claude','codex']), label: z.string().min(1).max(80).regex(/^[\p{L}\p{N} ._()-]+$/u), credentials: z.unknown() }).parse(request.body);
+    const body = z.object({ provider: z.enum(['claude','codex']), label: z.string().min(1).max(80).regex(/^[\p{L}\p{N} ._()-]+$/u).optional(), credentials: z.unknown() }).parse(request.body);
     if (store.get<{ count: number }>('SELECT COUNT(*) AS count FROM accounts WHERE user_id=?', user.id)!.count >= 20) return fail(409, 'Maximum 20 accounts per user');
     const credentials = parseCredentials(body.provider, body.credentials);
-    if (store.get('SELECT id FROM accounts WHERE user_id=? AND provider=? AND label=?', user.id, body.provider, body.label)) return fail(409, 'Account label already exists');
+    if (body.label && store.get('SELECT id FROM accounts WHERE user_id=? AND provider=? AND label=?', user.id, body.provider, body.label)) return fail(409, 'Account label already exists');
     const id = randomUUID();
-    store.run('INSERT INTO accounts(id,user_id,provider,label,credentials) VALUES(?,?,?,?,?)', id, user.id, body.provider, body.label, vault.seal(credentials, id));
+    store.run('INSERT INTO accounts(id,user_id,provider,label,credentials) VALUES(?,?,?,?,?)', id, user.id, body.provider, body.label ?? id, vault.seal(credentials, id));
     return { id, status: 'active', message: 'Connected; limits will appear after the first check' };
   });
   app.post<{ Params: { id: string } }>('/v1/accounts/:id/usage', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async request => {

@@ -1,5 +1,5 @@
 import { Store, type Account, type Job, type User, type WindowRow } from './db.js';
-import { canContinue, FIVE, HOUR, nextScheduled, resetDetected, type Snapshot } from './domain.js';
+import { anchorsAround, canContinue, FIVE, HOUR, nextAnchor, nextScheduled, resetDetected, type Snapshot } from './domain.js';
 import { type Credentials, type ProviderAdapter, ProviderError } from './providers.js';
 import { Vault } from './security.js';
 
@@ -13,7 +13,7 @@ export class Engine {
     const existing = this.store.get<Job>('SELECT * FROM jobs WHERE account_id=?', account.id);
     if (existing?.dedupe === dedupe) return;
     if (existing) {
-      const priority: Record<string, number> = { weekly_reset: 0, manual: 1, scheduled: 2, five_reset: 3 };
+      const priority: Record<string, number> = { weekly_reset: 0, manual: 1, anchor: 2, scheduled: 2, five_reset: 3 };
       const promote = priority[reason]! <= priority[existing.reason]!;
       this.store.run('UPDATE jobs SET reason=?,dedupe=?,due=MIN(due,?),account_version=?,schedule_version=?,expires=? WHERE id=?',
         promote ? reason : existing.reason, promote ? dedupe : existing.dedupe, now, account.version,
@@ -51,7 +51,7 @@ export class Engine {
       const previouslyFive = previous.some(w => w.kind === 'five_hour' && w.present);
       if (!hasFive) {
         this.store.run('UPDATE accounts SET next_session=NULL WHERE id=?', account.id);
-        this.store.run("DELETE FROM jobs WHERE account_id=? AND reason IN ('scheduled','five_reset')", account.id);
+        this.store.run("DELETE FROM jobs WHERE account_id=? AND reason IN ('anchor','scheduled','five_reset')", account.id);
       } else if (!previouslyFive || account.next_session === null) {
         this.store.run('UPDATE accounts SET next_session=? WHERE id=?', nextScheduled(schedule, now), account.id);
       }
@@ -77,7 +77,7 @@ export class Engine {
       this.store.run('DELETE FROM jobs WHERE account_id=?', account.id);
       this.store.notify(account.user_id, account.id, `auth:${account.id}:${account.version}`, `${account.label}: authentication expired or was rejected. Run acadence accounts reauth ${account.id}.`, now);
     } else if (attempts >= 3 || code === 'quota_schema') {
-      if (code === 'quota_schema') this.store.run("DELETE FROM jobs WHERE account_id=? AND reason IN ('scheduled','five_reset')", account.id);
+      if (code === 'quota_schema') this.store.run("DELETE FROM jobs WHERE account_id=? AND reason IN ('anchor','scheduled','five_reset')", account.id);
       this.store.notify(account.user_id, account.id, `error:${account.id}:${code}:${Math.floor(now / (24 * HOUR))}`,
         `${account.label}: ${code === 'quota_schema' ? 'provider quota format is unsupported; check for an Acadence update' : 'provider requests repeatedly failed; Acadence will keep retrying'}.`, now);
     }
@@ -95,9 +95,9 @@ export class Engine {
   }
   async executeJob(account: Account, job: Job, now: number) {
     const user = this.store.get<User>('SELECT * FROM users WHERE id=?', account.user_id)!;
-    const scheduled = job.reason === 'scheduled' || job.reason === 'five_reset';
+    const scheduled = ['anchor','scheduled','five_reset'].includes(job.reason);
     if (job.account_version !== account.version || (job.expires !== null && job.expires <= now) ||
-      (scheduled && (job.schedule_version !== user.schedule_version || !canContinue(this.store.schedule(user), now) && (job.reason === 'five_reset' || job.attempts > 0)))) {
+      (scheduled && (job.schedule_version !== user.schedule_version || job.reason !== 'anchor' && !canContinue(this.store.schedule(user), now) && (job.reason === 'five_reset' || job.attempts > 0)))) {
       this.store.run('DELETE FROM jobs WHERE id=?', job.id);
       return;
     }
@@ -140,7 +140,12 @@ export class Engine {
             if (!account || account.status !== 'active') return;
             if (account.last_error !== 'quota_schema' && account.next_session !== null && account.next_session <= now) {
               const user = this.store.get<User>('SELECT * FROM users WHERE id=?', account.user_id)!;
-              if (now - account.next_session < 90_000) this.enqueue(account, 'scheduled', `schedule:${account.id}:${user.schedule_version}:${account.next_session}`, now, account.next_session + FIVE);
+              if (now - account.next_session < 90_000) {
+                const schedule = this.store.schedule(user);
+                const reason = anchorsAround(schedule, account.next_session).includes(account.next_session) ? 'anchor' : 'scheduled';
+                const expires = Math.min(account.next_session + FIVE, nextAnchor(schedule, account.next_session) ?? Infinity);
+                this.enqueue(account, reason, `schedule:${account.id}:${user.schedule_version}:${account.next_session}`, now, expires);
+              }
               this.store.run('UPDATE accounts SET next_session=? WHERE id=?', nextScheduled(this.store.schedule(user), now), account.id);
             }
             const job = this.store.get<Job>("SELECT * FROM jobs WHERE account_id=? AND due<=? ORDER BY CASE reason WHEN 'weekly_reset' THEN 0 WHEN 'manual' THEN 1 ELSE 2 END,id LIMIT 1", account.id, Date.now());

@@ -141,3 +141,17 @@ test('different opening reasons share one retry operation and weekly resets take
   assert.equal(jobs[0]!.attempts, 2);
   store.close();
 });
+test('failed anchors keep retrying near another anchor until their operation expires', async () => {
+  let calls = 0;
+  const { store, account, engine } = fixture({ execute: async () => { calls++; throw new ProviderError('unavailable'); } });
+  store.run('UPDATE users SET anchors=?', '["06:00","07:00"]');
+  const now = Date.parse('2026-09-08T06:00:00Z');
+  engine.enqueue(account(), 'anchor', 'anchor:a', now, now + HOUR);
+  await engine.executeJob(account(), store.all<Job>('SELECT * FROM jobs')[0]!, now);
+  await engine.executeJob(account(), store.all<Job>('SELECT * FROM jobs')[0]!, now + 60_000);
+  assert.equal(calls, 2);
+  await engine.executeJob(account(), store.all<Job>('SELECT * FROM jobs')[0]!, now + HOUR);
+  assert.equal(calls, 2);
+  assert.equal(store.all('SELECT * FROM jobs').length, 0);
+  store.close();
+});

@@ -65,7 +65,7 @@ export async function createApi(store: Store, vault: Vault, engine: Engine, botU
     const schedule = scheduleSchema.parse(request.body);
     store.transaction(() => {
       store.run('UPDATE users SET timezone=?,anchors=?,schedule_version=schedule_version+1 WHERE id=?', schedule.timezone, JSON.stringify(schedule.anchors), user.id);
-      store.run("DELETE FROM jobs WHERE account_id IN (SELECT id FROM accounts WHERE user_id=?) AND reason IN ('scheduled','five_reset')", user.id);
+      store.run("DELETE FROM jobs WHERE account_id IN (SELECT id FROM accounts WHERE user_id=?) AND reason IN ('anchor','scheduled','five_reset')", user.id);
       store.run("UPDATE accounts SET next_session=? WHERE user_id=? AND id IN (SELECT account_id FROM windows WHERE kind='five_hour' AND present=1)", nextScheduled(schedule, Date.now()), user.id);
     });
     return schedule;

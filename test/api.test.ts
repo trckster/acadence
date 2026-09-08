@@ -5,6 +5,7 @@ import { Vault, hash } from '../src/security.js';
 import { Engine } from '../src/engine.js';
 import { createApi } from '../src/api.js';
 import { Telegram } from '../src/telegram.js';
+import { ProviderError } from '../src/providers.js';
 
 async function fixture() {
   const store = new Store(':memory:');
@@ -25,6 +26,58 @@ async function fixture() {
   return { store, vault, engine, telegram, app, login, close: async () => { await app.close(); store.close(); } };
 }
 const credentials = { auth_mode: 'chatgpt', tokens: { access_token: 'access-secret', refresh_token: 'refresh-secret', id_token: 'id-secret' } };
+test('on-demand usage is scoped, fresh, locked against overlap, and hides stale data on failure', async () => {
+  const f = await fixture();
+  let release = () => {};
+  try {
+    const headers = await f.login(1);
+    const other = await f.login(2);
+    const id = (await f.app.inject({ method: 'POST', url: '/v1/accounts', headers, payload: { provider: 'codex', label: 'personal', credentials } })).json().id;
+    const url = `/v1/accounts/${id}/usage`;
+    f.store.run('INSERT INTO windows(account_id,kind,used,resets_at,sampled_at) VALUES(?,?,?,?,?)', id, 'weekly', 99, null, 1);
+    let calls = 0;
+    let started = () => {};
+    const entered = new Promise<void>(resolve => { started = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.engine.providers.execute = async (_provider, _credentials, action) => {
+      calls++;
+      assert.equal(action, 'poll');
+      started();
+      await gate;
+      return { windows: [{ kind: 'weekly', used: 12, resetsAt: null }] };
+    };
+    assert.equal((await f.app.inject({ method: 'POST', url })).statusCode, 401);
+    assert.equal((await f.app.inject({ method: 'POST', url, headers: other })).statusCode, 404);
+    assert.equal(calls, 0);
+    const pending = f.app.inject({ method: 'POST', url, headers });
+    void pending.then(() => {});
+    await entered;
+    const busy = (await f.app.inject({ method: 'POST', url, headers })).json();
+    assert.deepEqual(busy.limits, []);
+    assert.match(busy.refreshError, /operation in progress/);
+    assert.equal((await f.app.inject({ method: 'DELETE', url: `/v1/accounts/${id}`, headers })).statusCode, 409);
+    await f.engine.tick();
+    assert.equal(calls, 1);
+    release();
+    const fresh = (await pending).json();
+    assert.equal(fresh.refreshError, null);
+    assert.deepEqual(fresh.limits, [{ kind: 'weekly', used: 12, resetsAt: null }]);
+    assert.equal(f.engine.busy.size, 0);
+    f.engine.providers.execute = async () => { throw new ProviderError('unavailable'); };
+    const failed = (await f.app.inject({ method: 'POST', url, headers })).json();
+    assert.deepEqual(failed.limits, []);
+    assert.equal(failed.refreshError, 'unavailable');
+    assert.equal(f.store.get<{ used: number }>('SELECT used FROM windows WHERE account_id=?', id)!.used, 12);
+    assert.equal(f.engine.busy.size, 0);
+    f.engine.providers.execute = async () => { throw new ProviderError('auth'); };
+    const expired = (await f.app.inject({ method: 'POST', url, headers })).json();
+    assert.equal(expired.status, 'reauth_required');
+    assert.deepEqual(expired.limits, []);
+    const skipped = (await f.app.inject({ method: 'POST', url, headers })).json();
+    assert.equal(skipped.refreshError, 'reauthentication required');
+    assert.deepEqual(skipped.limits, []);
+  } finally { release(); await f.close(); }
+});
 test('Telegram sign-in binds identity, stores first timezone, hashes bearer tokens and consumes device once', async () => {
   const f = await fixture();
   try {

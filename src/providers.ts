@@ -7,11 +7,12 @@ import { z } from 'zod';
 import type { Provider, Snapshot, Window } from './domain.js';
 
 const token = z.string().min(1).max(32_000);
+const emailSchema = z.string().email().max(254);
 export const claudeCredentials = z.object({ claudeAiOauth: z.object({
   accessToken: token, refreshToken: token, expiresAt: z.number().finite(),
   scopes: z.array(z.string()).max(30), subscriptionType: z.string().nullable().optional(),
   rateLimitTier: z.string().nullable().optional(), clientId: z.string().uuid().optional()
-}) });
+}), email: emailSchema.optional() });
 export const codexCredentials = z.object({
   auth_mode: z.literal('chatgpt').optional(),
   tokens: z.object({ access_token: token, refresh_token: token, id_token: token, account_id: z.string().max(300).optional() }),
@@ -20,6 +21,25 @@ export const codexCredentials = z.object({
 export type Credentials = z.infer<typeof claudeCredentials> | z.infer<typeof codexCredentials>;
 export function parseCredentials(provider: Provider, value: unknown): Credentials {
   return provider === 'claude' ? claudeCredentials.parse(value) : codexCredentials.parse(value);
+}
+
+// Display metadata only: never use an email claim to authorize account access.
+export function accountEmail(credentials: Credentials): string | null {
+  try {
+    const value = 'tokens' in credentials
+      ? JSON.parse(Buffer.from(credentials.tokens.id_token.split('.')[1]!, 'base64url').toString('utf8')).email
+      : credentials.email;
+    const parsed = emailSchema.safeParse(value);
+    return parsed.success ? parsed.data : null;
+  } catch { return null; }
+}
+
+export async function claudeAccountEmail(home: string): Promise<string | undefined> {
+  try {
+    const status = JSON.parse(await runProcess('claude', ['auth', 'status', '--json'], cleanEnvironment(home), home));
+    const parsed = emailSchema.safeParse(status.email);
+    return status.loggedIn === true && parsed.success ? parsed.data : undefined;
+  } catch { return undefined; }
 }
 
 export class ProviderError extends Error {
@@ -187,7 +207,7 @@ export class Providers implements ProviderAdapter {
         });
         if (!response.ok) throw new ProviderError([400, 401, 403].includes(response.status) ? 'auth' : 'unavailable');
         const refreshed = z.object({ access_token: token, refresh_token: token.optional(), expires_in: z.number().positive() }).parse(await response.json());
-        data = { claudeAiOauth: { ...data.claudeAiOauth, accessToken: refreshed.access_token, refreshToken: refreshed.refresh_token ?? data.claudeAiOauth.refreshToken, expiresAt: Date.now() + refreshed.expires_in * 1000 } };
+        data = { ...data, claudeAiOauth: { ...data.claudeAiOauth, accessToken: refreshed.access_token, refreshToken: refreshed.refresh_token ?? data.claudeAiOauth.refreshToken, expiresAt: Date.now() + refreshed.expires_in * 1000 } };
         save(data);
         await writeFile(file, JSON.stringify(data), { mode: 0o600 });
       };
@@ -213,7 +233,11 @@ export class Providers implements ProviderAdapter {
       throw new ProviderError('unavailable');
     } finally {
       await rpc?.finish();
-      try { save(parseCredentials(provider, JSON.parse(await readFile(file, 'utf8')))); }
+      try {
+        const updated = parseCredentials(provider, JSON.parse(await readFile(file, 'utf8')));
+        if ('claudeAiOauth' in updated && 'claudeAiOauth' in credentials) updated.email ??= credentials.email;
+        save(updated);
+      }
       catch { if (!failed) throw new ProviderError('auth'); }
       finally { await rm(home, { recursive: true, force: true }); }
     }

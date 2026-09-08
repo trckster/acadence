@@ -1,6 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseClaudeUsage, parseCodexUsage, parseCredentials, cleanEnvironment } from '../src/providers.js';
+import { accountEmail, parseClaudeUsage, parseCodexUsage, parseCredentials, cleanEnvironment } from '../src/providers.js';
+
+test('account emails are optional display metadata and reject malformed claims', () => {
+  const codex = (claim: unknown) => parseCredentials('codex', { tokens: {
+    access_token: 'access', refresh_token: 'refresh',
+    id_token: `header.${Buffer.from(JSON.stringify(claim)).toString('base64url')}.signature`
+  } });
+  assert.equal(accountEmail(codex({ email: 'person@example.com' })), 'person@example.com');
+  for (const claim of [{}, null, { email: 123 }, { email: 'bad\nemail@example.com' }]) assert.equal(accountEmail(codex(claim)), null);
+  assert.equal(accountEmail(parseCredentials('codex', { tokens: { access_token: 'a', refresh_token: 'r', id_token: 'malformed' } })), null);
+  const claude = { claudeAiOauth: { accessToken: 'a', refreshToken: 'r', expiresAt: 0, scopes: [] } };
+  assert.equal(accountEmail(parseCredentials('claude', claude)), null);
+  assert.equal(accountEmail(parseCredentials('claude', { ...claude, email: 'work@example.com' })), 'work@example.com');
+});
 import { Vault } from '../src/security.js';
 
 const window = (minutes: number) => ({ usedPercent: 25, windowDurationMins: minutes, resetsAt: 1_800_000_000 });

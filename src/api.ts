@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { Store, type Account, type User } from './db.js';
 import { HOUR, nextScheduled, scheduleSchema, timezoneSchema } from './domain.js';
-import { parseCredentials } from './providers.js';
+import { accountEmail, parseCredentials, type Credentials } from './providers.js';
 import { hash, secret, Vault } from './security.js';
 import { Engine } from './engine.js';
 
@@ -74,6 +74,7 @@ export async function createApi(store: Store, vault: Vault, engine: Engine, botU
     const user = authenticate(request.headers.authorization);
     return store.all<Account>('SELECT * FROM accounts WHERE user_id=? ORDER BY label', user.id).map(account => ({
       id: account.id, provider: account.provider, label: account.label, status: account.status, lastError: account.last_error,
+      email: accountEmail(vault.open<Credentials>(account.credentials, account.id)),
       nextSession: account.next_session, lastSuccess: account.last_success,
       limits: store.all('SELECT kind,used,resets_at AS resetsAt,sampled_at AS sampledAt FROM windows WHERE account_id=? AND present=1', account.id),
       pending: store.all('SELECT reason,attempts,due FROM jobs WHERE account_id=?', account.id)
@@ -88,6 +89,23 @@ export async function createApi(store: Store, vault: Vault, engine: Engine, botU
     const id = randomUUID();
     store.run('INSERT INTO accounts(id,user_id,provider,label,credentials) VALUES(?,?,?,?,?)', id, user.id, body.provider, body.label, vault.seal(credentials, id));
     return { id, status: 'active', message: 'Connected; limits will appear after the first check' };
+  });
+  app.post<{ Params: { id: string } }>('/v1/accounts/:id/usage', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async request => {
+    const account = owned(authenticate(request.headers.authorization), request.params.id);
+    if (account.status !== 'active') return { limits: [], refreshError: 'reauthentication required' };
+    if (engine.busy.has(account.id) || engine.busy.size >= engine.concurrency) return { limits: [], refreshError: 'account operation in progress; retry shortly' };
+    engine.busy.add(account.id);
+    try {
+      const snapshot = await engine.poll(account, Date.now());
+      const current = owned(authenticate(request.headers.authorization), account.id);
+      return {
+        status: current.status, lastError: current.last_error,
+        email: accountEmail(vault.open<Credentials>(current.credentials, current.id)),
+        limits: snapshot?.windows ?? [],
+        pending: store.all('SELECT reason,attempts,due FROM jobs WHERE account_id=?', account.id),
+        refreshError: snapshot ? null : current.last_error ?? 'provider unavailable'
+      };
+    } finally { engine.busy.delete(account.id); }
   });
   app.put<{ Params: { id: string } }>('/v1/accounts/:id', async request => {
     const account = owned(authenticate(request.headers.authorization), request.params.id);

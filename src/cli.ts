@@ -7,7 +7,8 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { anchorSchema, timezoneSchema, type Provider, type Schedule } from './domain.js';
-import { cleanEnvironment, parseCredentials, runProcess } from './providers.js';
+import { claudeAccountEmail, cleanEnvironment, parseCredentials, runProcess } from './providers.js';
+import { formatReset } from './format.js';
 
 process.umask(0o077);
 const program = new Command().name('acadence').description('Manage Claude Code and Codex usage windows').version('0.1.0');
@@ -26,11 +27,11 @@ async function config(): Promise<Config> {
   try { const value = configSchema.parse(JSON.parse(await readFile(configFile, 'utf8'))); validateUrl(value.url); return value; }
   catch { throw new Error('Run acadence login first'); }
 }
-async function request(path: string, method = 'GET', body?: unknown, auth?: Config) {
+async function request(path: string, method = 'GET', body?: unknown, auth?: Config, timeout = 30_000) {
   const current = auth ?? await config();
   const response = await fetch(validateUrl(current.url) + path, {
     method, headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(current.token ? { authorization: `Bearer ${current.token}` } : {}) },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: 'error', signal: AbortSignal.timeout(30_000)
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: 'error', signal: AbortSignal.timeout(timeout)
   });
   const result = await response.json() as any;
   if (!response.ok) throw new Error(typeof result.error === 'string' ? result.error : `Request failed (${response.status})`);
@@ -65,7 +66,9 @@ async function credentials(provider: Provider, consume: (data: unknown) => Promi
       const suffix = createHash('sha256').update(dir).digest('hex').slice(0, 8);
       raw = await runProcess('security', ['find-generic-password', '-s', `Claude Code-credentials-${suffix}`, '-w'], cleanEnvironment(home), home);
     }
-    await consume(parseCredentials(provider, JSON.parse(raw)));
+    const data = parseCredentials(provider, JSON.parse(raw));
+    if ('claudeAiOauth' in data) data.email = await claudeAccountEmail(home);
+    await consume(data);
   } finally {
     if (provider === 'claude' && process.platform === 'darwin') {
       const suffix = createHash('sha256').update(dir).digest('hex').slice(0, 8);
@@ -106,27 +109,63 @@ accounts.command('connect <provider>').option('--label <name>', 'Account name', 
   const type = z.enum(['claude','codex']).parse(provider);
   await config();
   await credentials(type, async data => {
-    const result = await request('/v1/accounts', 'POST', { provider: type, label: options.label, credentials: data });
-    console.log(`Connected ${options.label}: ${result.id}`);
+    await request('/v1/accounts', 'POST', { provider: type, label: options.label, credentials: data });
+    console.log(`Connected ${type} / ${options.label}`);
   });
 });
-accounts.command('list').action(async () => {
+async function showAccounts() {
   const rows = await request('/v1/accounts');
+  for (let i = 0; i < rows.length; i += 4) {
+    await Promise.all(rows.slice(i, i + 4).map(async (row: any) => {
+      row.limits = [];
+      try {
+        Object.assign(row, await request(`/v1/accounts/${encodeURIComponent(row.id)}/usage`, 'POST', {}, undefined, 120_000));
+      } catch {
+        row.refreshError = 'refresh failed; retry shortly';
+      }
+    }));
+  }
+  const now = Date.now();
   if (!rows.length) { console.log('No accounts connected'); return; }
   for (const row of rows) {
-    console.log(`${row.id}  ${row.provider} / ${row.label}  ${row.status}${row.lastError ? ` (${row.lastError})` : ''}`);
-    if (!row.limits.length) console.log('  Limits not detected yet');
-    for (const limit of row.limits) console.log(`  ${limit.kind}: ${limit.used}% used; resets ${limit.resetsAt ? new Date(limit.resetsAt).toLocaleString() : 'not active'}; checked ${new Date(limit.sampledAt).toLocaleString()}`);
-    if (row.pending.length) console.log(`  ${row.pending.length} pending operation(s)`);
+    if (row !== rows[0]) console.log();
+    console.log(`${row.provider} / ${row.label}: ${row.email ?? 'email unavailable'}`);
+    console.log(`    ${row.status.replaceAll('_', ' ')}${row.lastError ? ` (${row.lastError})` : ''}`);
+    if (row.refreshError) console.log(`    Usage unavailable: ${row.refreshError}`);
+    for (const [kind, label] of [['five_hour', '5h'], ['weekly', 'Week']]) {
+      const limit = row.limits.find((item: any) => item.kind === kind);
+      console.log(limit
+        ? `    ${label}: ${limit.used}% used; resets ${formatReset(limit.resetsAt, now)}`
+        : `    ${label}: usage unavailable`);
+    }
+    if (row.pending.length) console.log(`    ${row.pending.length} pending operation(s)`);
   }
-});
-accounts.command('disconnect <id>').action(async id => { await request(`/v1/accounts/${encodeURIComponent(id)}`, 'DELETE'); console.log('Disconnected'); });
-accounts.command('reauth <id>').action(async id => {
+}
+accounts.command('list').action(showAccounts);
+program.command('usage').description('Fetch current usage for every account of the signed-in user').action(showAccounts);
+async function resolveAccount(value: string, options: { provider?: string; label?: string }) {
+  if (options.provider) z.enum(['claude', 'codex']).parse(options.provider);
   const rows = await request('/v1/accounts');
-  const account = rows.find((row: any) => row.id === id);
-  if (!account) throw new Error('Account not found');
+  const matches = rows.filter((row: any) =>
+    (row.email?.toLowerCase() === value.toLowerCase() || row.label === value || row.id === value) &&
+    (!options.provider || row.provider === options.provider) && (!options.label || row.label === options.label));
+  if (!matches.length) throw new Error('Account not found; check acadence accounts list');
+  if (matches.length > 1) throw new Error('Multiple accounts match; add --provider codex|claude and/or --label NAME from acadence accounts list');
+  return matches[0];
+}
+accounts.command('disconnect <account>').description('Disconnect by email or label')
+  .option('--provider <provider>', 'Select codex or claude').option('--label <name>', 'Select an account label')
+  .action(async (value, options) => {
+    const account = await resolveAccount(value, options);
+    await request(`/v1/accounts/${encodeURIComponent(account.id)}`, 'DELETE');
+    console.log('Disconnected');
+  });
+accounts.command('reauth <account>').description('Reauthenticate by email or label')
+  .option('--provider <provider>', 'Select codex or claude').option('--label <name>', 'Select an account label')
+  .action(async (value, options) => {
+  const account = await resolveAccount(value, options);
   await credentials(account.provider, async data => {
-    await request(`/v1/accounts/${encodeURIComponent(id)}`, 'PUT', { credentials: data });
+    await request(`/v1/accounts/${encodeURIComponent(account.id)}`, 'PUT', { credentials: data });
     console.log('Authentication updated');
   });
 });

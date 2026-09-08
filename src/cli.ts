@@ -13,7 +13,7 @@ import { formatReset } from './format.js';
 import { fetchWithContext, responseJson, requestTarget, RequestError, formatError, providerErrorMessage } from './errors.js';
 
 process.umask(0o077);
-const program = new Command().name('acadence').description('Manage Claude Code and Codex usage windows').version('0.1.0');
+const program = new Command().name('acadence').description('Manage Claude Code and Codex usage windows');
 const configDir = join(homedir(), '.config', 'acadence');
 const configFile = join(configDir, 'client.json');
 const production = 'https://acadence.daniil.online';
@@ -213,7 +213,8 @@ function configureHelp(command: Command) {
     });
 }
 configureHelp(program);
-program.parseAsync().catch(error => {
+if (process.argv.length === 2) console.log('0.1.0');
+else program.parseAsync().catch(error => {
   console.error(error instanceof z.ZodError ? 'Invalid input or unsupported provider credential format' : formatError(error));
   process.exitCode = 1;
 });

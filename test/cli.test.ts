@@ -22,13 +22,14 @@ async function runCli(args: string[], env: NodeJS.ProcessEnv, input = ''): Promi
 }
 
 test('help commands work at every level and removed commands and flags are rejected', async () => {
+  assert.equal((await runCli([], process.env)).trim(), '0.1.0');
   for (const path of [[], ['accounts'], ['accounts', 'disconnect'], ['schedule', 'add']]) {
     const output = await runCli(['help', ...path], process.env);
     assert.match(output, /Usage: acadence/);
-    assert.doesNotMatch(output, /--help|\bupdate\b|<account>|<id>/);
+    assert.doesNotMatch(output, /--help|--version|\bOptions:|\bupdate\b|<account>|<id>/);
   }
   assert.match(await runCli(['accounts', 'help', 'reauth'], process.env), /Choose an account/);
-  for (const args of [['usage'], ['schedule', 'update', '06:00', '07:00'], ['help', 'missing'],
+  for (const args of [['--version'], ['-V'], ['usage'], ['schedule', 'update', '06:00', '07:00'], ['help', 'missing'],
     ...[[], ['accounts'], ['accounts', 'disconnect'], ['schedule', 'add'], ['help']].flatMap(path => ['--help', '-h'].map(flag => [...path, flag]))]) {
     await assert.rejects(runCli(args, process.env), /unknown (?:command|option)|Unknown command/);
   }

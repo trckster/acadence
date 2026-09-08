@@ -120,8 +120,10 @@ export async function createApi(store: Store, vault: Vault, engine: Engine, botU
     if (!email) return fail(400, 'Could not determine account email; sign in again');
     const previousEmail = accountEmail(vault.open<Credentials>(account.credentials, account.id));
     if (previousEmail && previousEmail.toLowerCase() !== email.toLowerCase()) return fail(409, 'Sign in to the same email to reauthenticate; use acadence connect for another account');
-    const existing = store.all<Account>('SELECT * FROM accounts WHERE user_id=? AND provider=? AND category=? AND id<>?', account.user_id, account.provider, account.category, account.id);
-    if (existing.some(other => accountEmail(vault.open<Credentials>(other.credentials, other.id))?.toLowerCase() === email.toLowerCase())) return fail(409, 'This service, account type and email are already connected');
+    if (!previousEmail) {
+      const existing = store.all<Account>('SELECT * FROM accounts WHERE user_id=? AND provider=? AND category=? AND id<>?', account.user_id, account.provider, account.category, account.id);
+      if (existing.some(other => accountEmail(vault.open<Credentials>(other.credentials, other.id))?.toLowerCase() === email.toLowerCase())) return fail(409, 'This service, account type and email are already connected');
+    }
     store.transaction(() => {
       store.run("UPDATE accounts SET credentials=?,version=version+1,status='active',failures=0,last_error=NULL,next_poll=0 WHERE id=?", vault.seal(credentials, account.id), account.id);
       store.run('DELETE FROM jobs WHERE account_id=?', account.id);

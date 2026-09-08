@@ -1,6 +1,6 @@
 {
   "name": "acadence",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Multi-user Claude Code and Codex usage window scheduler",
   "type": "module",
   "bin": {

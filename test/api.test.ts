@@ -188,3 +188,25 @@ test('account identity is service, type and email, and reauth preserves identity
     assert.ok(rows.every((row: any) => !('label' in row) && row.category && row.email));
   } finally { await f.close(); }
 });
+
+test('legacy duplicate identities can reauthenticate without allowing new duplicates', async () => {
+  const f = await fixture();
+  try {
+    const headers = await f.login(1);
+    const connected = await f.app.inject({ method: 'POST', url: '/v1/accounts', headers,
+      payload: { provider: 'codex', category: 'personal', credentials } });
+    const id = connected.json().id;
+    f.store.run(`INSERT INTO accounts(id,user_id,provider,category,credentials)
+      SELECT 'legacy',user_id,provider,category,? FROM accounts WHERE id=?`, f.vault.seal(credentials, 'legacy'), id);
+    for (const accountId of [id, 'legacy']) {
+      assert.equal((await f.app.inject({ method: 'PUT', url: `/v1/accounts/${accountId}`, headers,
+        payload: { credentials } })).statusCode, 200);
+    }
+    assert.equal((await f.app.inject({ method: 'POST', url: '/v1/accounts', headers,
+      payload: { provider: 'codex', category: 'personal', credentials } })).statusCode, 409);
+    f.store.run('UPDATE accounts SET credentials=? WHERE id=?',
+      f.vault.seal({ ...credentials, tokens: { ...credentials.tokens, id_token: 'email-unavailable' } }, 'legacy'), 'legacy');
+    assert.equal((await f.app.inject({ method: 'PUT', url: '/v1/accounts/legacy', headers,
+      payload: { credentials } })).statusCode, 409);
+  } finally { await f.close(); }
+});

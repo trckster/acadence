@@ -155,3 +155,18 @@ test('failed anchors keep retrying near another anchor until their operation exp
   assert.equal(store.all('SELECT * FROM jobs').length, 0);
   store.close();
 });
+test('slow provider operations cannot prevent another account anchor from being queued', async () => {
+  let finish!: () => void;
+  const blocked = new Promise<void>(resolve => { finish = resolve; });
+  const { store, account, engine } = fixture({ execute: async () => { await blocked; return null; } });
+  const before = Date.parse('2026-09-08T05:59:59Z');
+  store.run('UPDATE accounts SET next_poll=?', Date.now() + HOUR);
+  store.run("INSERT INTO accounts(id,user_id,provider,label,credentials,next_poll,next_session) VALUES('b','u','codex','other',?,?,?)", vault.seal(credentials, 'b'), Date.now() + HOUR, before + 1000);
+  engine.enqueue(account(), 'manual', 'manual:a', before);
+  const tick = engine.tick(before);
+  await engine.tick(before + 1000);
+  assert.equal(store.get<Job>("SELECT * FROM jobs WHERE account_id='b'")?.reason, 'anchor');
+  finish();
+  await tick;
+  store.close();
+});

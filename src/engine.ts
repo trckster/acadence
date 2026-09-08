@@ -123,12 +123,29 @@ export class Engine {
       }
     }
   }
+  plan(now: number) {
+    this.store.transaction(() => {
+      const due = this.store.all<Account>("SELECT * FROM accounts WHERE status='active' AND (last_error IS NULL OR last_error!='quota_schema') AND next_session<=?", now);
+      for (const account of due) {
+        const user = this.store.get<User>('SELECT * FROM users WHERE id=?', account.user_id)!;
+        const schedule = this.store.schedule(user);
+        const slot = account.next_session!;
+        if (now - slot < 90_000) {
+          const reason = anchorsAround(schedule, slot).includes(slot) ? 'anchor' : 'scheduled';
+          this.enqueue(account, reason, `schedule:${account.id}:${user.schedule_version}:${slot}`, now,
+            Math.min(slot + FIVE, nextAnchor(schedule, slot) ?? Infinity));
+        }
+        this.store.run('UPDATE accounts SET next_session=? WHERE id=?', nextScheduled(schedule, now), account.id);
+      }
+    });
+  }
   async tick(now = Date.now()) {
+    this.plan(now);
+    this.reminders(now);
     if (this.running) return;
     this.running = true;
     this.lastTick = Date.now();
     try {
-      this.reminders(now);
       const accounts = this.store.all<Account>("SELECT * FROM accounts WHERE status='active' ORDER BY MIN(next_poll,COALESCE(next_session,next_poll))");
       for (let i = 0; i < accounts.length; i += this.concurrency) {
         await Promise.all(accounts.slice(i, i + this.concurrency).map(async initial => {
@@ -138,16 +155,6 @@ export class Engine {
             if (initial.next_poll <= now) await this.poll(initial, now);
             const account = this.store.get<Account>('SELECT * FROM accounts WHERE id=?', initial.id);
             if (!account || account.status !== 'active') return;
-            if (account.last_error !== 'quota_schema' && account.next_session !== null && account.next_session <= now) {
-              const user = this.store.get<User>('SELECT * FROM users WHERE id=?', account.user_id)!;
-              if (now - account.next_session < 90_000) {
-                const schedule = this.store.schedule(user);
-                const reason = anchorsAround(schedule, account.next_session).includes(account.next_session) ? 'anchor' : 'scheduled';
-                const expires = Math.min(account.next_session + FIVE, nextAnchor(schedule, account.next_session) ?? Infinity);
-                this.enqueue(account, reason, `schedule:${account.id}:${user.schedule_version}:${account.next_session}`, now, expires);
-              }
-              this.store.run('UPDATE accounts SET next_session=? WHERE id=?', nextScheduled(this.store.schedule(user), now), account.id);
-            }
             const job = this.store.get<Job>("SELECT * FROM jobs WHERE account_id=? AND due<=? ORDER BY CASE reason WHEN 'weekly_reset' THEN 0 WHEN 'manual' THEN 1 ELSE 2 END,id LIMIT 1", account.id, Date.now());
             if (job) await this.executeJob(account, job, Date.now());
           } finally { this.busy.delete(initial.id); }

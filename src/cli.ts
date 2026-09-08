@@ -108,29 +108,51 @@ accounts.command('connect <provider>').option('--label <name>', 'Account name', 
   const type = z.enum(['claude','codex']).parse(provider);
   await config();
   await credentials(type, async data => {
-    const result = await request('/v1/accounts', 'POST', { provider: type, label: options.label, credentials: data });
-    console.log(`Connected ${options.label}: ${result.id}`);
+    await request('/v1/accounts', 'POST', { provider: type, label: options.label, credentials: data });
+    console.log(`Connected ${type} / ${options.label}`);
   });
 });
 async function showAccounts() {
   const rows = await request('/v1/accounts');
   if (!rows.length) { console.log('No accounts connected'); return; }
   for (const row of rows) {
-    console.log(`${row.id}  ${row.provider} / ${row.label}${row.email ? ` <${row.email}>` : ''}  ${row.status}${row.lastError ? ` (${row.lastError})` : ''}`);
-    if (!row.limits.length) console.log('  Limits not detected yet');
-    for (const limit of row.limits) console.log(`  ${limit.kind}: ${limit.used}% used; resets ${limit.resetsAt ? new Date(limit.resetsAt).toLocaleString() : 'not active'}; checked ${new Date(limit.sampledAt).toLocaleString()}`);
-    if (row.pending.length) console.log(`  ${row.pending.length} pending operation(s)`);
+    if (row !== rows[0]) console.log();
+    console.log(`${row.provider} / ${row.label}: ${row.email ?? 'email unavailable'}`);
+    console.log(`    ${row.status.replaceAll('_', ' ')}${row.lastError ? ` (${row.lastError})` : ''}`);
+    for (const [kind, label] of [['five_hour', '5h'], ['weekly', 'Week']]) {
+      const limit = row.limits.find((item: any) => item.kind === kind);
+      console.log(limit
+        ? `    ${label}: ${limit.used}% used; resets ${limit.resetsAt === null ? 'not active' : new Date(limit.resetsAt).toLocaleString()}; checked ${new Date(limit.sampledAt).toLocaleString()}`
+        : `    ${label}: usage unavailable`);
+    }
+    if (row.pending.length) console.log(`    ${row.pending.length} pending operation(s)`);
   }
 }
 accounts.command('list').action(showAccounts);
 program.command('usage').description('Show last recorded usage for every account of the signed-in user').action(showAccounts);
-accounts.command('disconnect <id>').action(async id => { await request(`/v1/accounts/${encodeURIComponent(id)}`, 'DELETE'); console.log('Disconnected'); });
-accounts.command('reauth <id>').action(async id => {
+async function resolveAccount(value: string, options: { provider?: string; label?: string }) {
+  if (options.provider) z.enum(['claude', 'codex']).parse(options.provider);
   const rows = await request('/v1/accounts');
-  const account = rows.find((row: any) => row.id === id);
-  if (!account) throw new Error('Account not found');
+  const matches = rows.filter((row: any) =>
+    (row.email?.toLowerCase() === value.toLowerCase() || row.label === value || row.id === value) &&
+    (!options.provider || row.provider === options.provider) && (!options.label || row.label === options.label));
+  if (!matches.length) throw new Error('Account not found; check acadence accounts list');
+  if (matches.length > 1) throw new Error('Multiple accounts match; add --provider codex|claude and/or --label NAME from acadence accounts list');
+  return matches[0];
+}
+accounts.command('disconnect <account>').description('Disconnect by email or label')
+  .option('--provider <provider>', 'Select codex or claude').option('--label <name>', 'Select an account label')
+  .action(async (value, options) => {
+    const account = await resolveAccount(value, options);
+    await request(`/v1/accounts/${encodeURIComponent(account.id)}`, 'DELETE');
+    console.log('Disconnected');
+  });
+accounts.command('reauth <account>').description('Reauthenticate by email or label')
+  .option('--provider <provider>', 'Select codex or claude').option('--label <name>', 'Select an account label')
+  .action(async (value, options) => {
+  const account = await resolveAccount(value, options);
   await credentials(account.provider, async data => {
-    await request(`/v1/accounts/${encodeURIComponent(id)}`, 'PUT', { credentials: data });
+    await request(`/v1/accounts/${encodeURIComponent(account.id)}`, 'PUT', { credentials: data });
     console.log('Authentication updated');
   });
 });

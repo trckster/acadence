@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
@@ -141,29 +142,38 @@ async function showAccounts() {
     if (row.pending.length) console.log(`    ${row.pending.length} pending operation(s)`);
   }
 }
-accounts.command('list').action(showAccounts);
-program.command('usage').description('Fetch current usage for every account of the signed-in user').action(showAccounts);
-async function resolveAccount(value: string, options: { provider?: string; label?: string }) {
-  if (options.provider) z.enum(['claude', 'codex']).parse(options.provider);
+accounts.command('list').description('Fetch current usage and status for every connected account').action(showAccounts);
+async function chooseAccount(action: string) {
   const rows = await request('/v1/accounts');
-  const matches = rows.filter((row: any) =>
-    (row.email?.toLowerCase() === value.toLowerCase() || row.label === value || row.id === value) &&
-    (!options.provider || row.provider === options.provider) && (!options.label || row.label === options.label));
-  if (!matches.length) throw new Error('Account not found; check acadence accounts list');
-  if (matches.length > 1) throw new Error('Multiple accounts match; add --provider codex|claude and/or --label NAME from acadence accounts list');
-  return matches[0];
-}
-accounts.command('disconnect <account>').description('Disconnect by email or label')
-  .option('--provider <provider>', 'Select codex or claude').option('--label <name>', 'Select an account label')
-  .action(async (value, options) => {
-    const account = await resolveAccount(value, options);
-    await request(`/v1/accounts/${encodeURIComponent(account.id)}`, 'DELETE');
-    console.log('Disconnected');
+  if (!rows.length) { console.log('No accounts connected'); return; }
+  console.log(`Choose an account to ${action}:`);
+  rows.forEach((row: any, index: number) => {
+    console.log(`  ${index + 1}. ${row.provider} / ${row.label}: ${row.email ?? 'email unavailable'} (${row.status.replaceAll('_', ' ')})`);
   });
-accounts.command('reauth <account>').description('Reauthenticate by email or label')
-  .option('--provider <provider>', 'Select codex or claude').option('--label <name>', 'Select an account label')
-  .action(async (value, options) => {
-  const account = await resolveAccount(value, options);
+  const input = createInterface({ input: process.stdin, output: process.stdout });
+  const prompt = () => process.stdout.write('Account number (Enter to cancel): ');
+  try {
+    prompt();
+    for await (const line of input) {
+      const value = line.trim();
+      if (!value) break;
+      const number = Number(value);
+      if (/^[0-9]+$/.test(value) && Number.isSafeInteger(number) && number >= 1 && number <= rows.length) return rows[number - 1];
+      console.log(`Enter a number from 1 to ${rows.length}.`);
+      prompt();
+    }
+    console.log('Cancelled');
+  } finally { input.close(); }
+}
+accounts.command('disconnect').description('Choose an account to disconnect').action(async () => {
+  const account = await chooseAccount('disconnect');
+  if (!account) return;
+  await request(`/v1/accounts/${encodeURIComponent(account.id)}`, 'DELETE');
+  console.log('Disconnected');
+});
+accounts.command('reauth').description('Choose an account to reauthenticate').action(async () => {
+  const account = await chooseAccount('reauthenticate');
+  if (!account) return;
   await credentials(account.provider, async data => {
     await request(`/v1/accounts/${encodeURIComponent(account.id)}`, 'PUT', { credentials: data });
     console.log('Authentication updated');
@@ -178,15 +188,26 @@ async function changeAnchors(change: (anchors: string[]) => string[]) {
 }
 schedule.command('add <time>').action(async time => { anchorSchema.parse(time); await changeAnchors(anchors => [...new Set([...anchors, time])]); });
 schedule.command('remove <time>').action(async time => { anchorSchema.parse(time); await changeAnchors(anchors => anchors.filter(anchor => anchor !== time)); });
-schedule.command('update <old> <time>').action(async (old, time) => {
-  anchorSchema.parse(time);
-  await changeAnchors(anchors => { if (!anchors.includes(old)) throw new Error('Anchor not found'); return anchors.map(anchor => anchor === old ? time : anchor); });
-});
 schedule.command('timezone <zone>').action(async zone => { timezoneSchema.parse(zone); display(await request('/v1/schedule', 'PUT', { ...await request('/v1/schedule'), timezone: zone })); });
 program.command('trigger').description('Queue an immediate request for every connected account').action(async () => {
   const result = await request('/v1/trigger', 'POST', {});
   console.log(`Queued ${result.queued} account(s). Check acadence accounts list for status.`);
 });
+function configureHelp(command: Command) {
+  command.helpOption(false).addHelpCommand(false);
+  for (const child of command.commands) configureHelp(child);
+  command.command('help [command...]').description('Display help for a command').helpOption(false).addHelpCommand(false)
+    .action((path: string[]) => {
+      let target = command;
+      for (const name of path) {
+        const child = target.commands.find(item => item.name() === name);
+        if (!child) throw new Error(`Unknown command: ${name}`);
+        target = child;
+      }
+      target.outputHelp();
+    });
+}
+configureHelp(program);
 program.parseAsync().catch(error => {
   console.error(error instanceof z.ZodError ? 'Invalid input or unsupported provider credential format' : error instanceof Error && !/token|secret|credential/i.test(error.message) ? error.message : 'Operation failed; check your sign-in and connection');
   process.exitCode = 1;

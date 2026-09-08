@@ -12,23 +12,21 @@ acadence login
 acadence accounts connect codex --label personal
 acadence accounts connect claude --label work
 acadence accounts list
-acadence usage
 acadence schedule add 06:00
 acadence schedule add 13:00
-acadence schedule update 13:00 14:00
-acadence schedule remove 14:00
+acadence schedule remove 13:00
 acadence schedule show
 acadence trigger
-acadence accounts reauth you@example.com
-acadence accounts disconnect you@example.com
+acadence accounts reauth
+acadence accounts disconnect
 acadence logout --all
 ```
 
 The API defaults to `https://acadance.daniil.online`. Sign-in opens Telegram; approve only a sign-in you initiated. First login stores the detected system timezone. Change it with `acadence schedule timezone Europe/Rome`. `login --api https://your-host` supports self-hosting.
 
-`acadence usage` and `acadence accounts list` fetch current usage from each connected account before displaying it. Each account shows its status, five-hour and weekly usage percentages where available, and reset times. Accounts are refreshed in batches of up to four; provider checks can take a few seconds. If a provider fails, authentication has expired, or server operations are busy, that account shows an explicit usage-unavailable reason instead of an old reading. Other accounts still display their successful results.
+`acadence accounts list` fetches current usage from each connected account before displaying it. Each account shows its status, five-hour and weekly usage percentages where available, and reset times. Accounts are refreshed in batches of up to four; provider checks can take a few seconds. If a provider fails, authentication has expired, or server operations are busy, that account shows an explicit usage-unavailable reason instead of an old reading. Other accounts still display their successful results.
 
-Both `usage` and `accounts list` identify accounts by provider, label, and email:
+`accounts list` identifies accounts by provider, label, and email:
 
 ```text
 codex / personal: you@example.com
@@ -37,9 +35,11 @@ codex / personal: you@example.com
     Week: 42.5% used; resets 2026-09-14 09:00
 ```
 
-Timestamps always use `YYYY-MM-DD HH:mm` with a 24-hour clock in the client's timezone. Future resets less than 24 hours away show remaining hours and minutes instead (or `in less than 1m`). Missing email or quota readings are marked unavailable. Codex emails come from the saved sign-in token; Claude emails are captured from `claude auth status` during connection or reauthentication. Reauthenticate an existing Claude account by label to capture its email.
+Timestamps always use `YYYY-MM-DD HH:mm` with a 24-hour clock in the client's timezone. Future resets less than 24 hours away show remaining hours and minutes instead (or `in less than 1m`). Missing email or quota readings are marked unavailable. Codex emails come from the saved sign-in token; Claude emails are captured from `claude auth status` during connection or reauthentication. Reauthenticate an existing Claude account to capture its email.
 
-`accounts reauth` and `accounts disconnect` accept an email or label. If multiple accounts match, narrow the selection with `--provider codex` (or `claude`) and/or `--label personal`. For example: `acadence accounts reauth you@example.com --provider codex --label personal`. Existing commands using internal account IDs remain compatible.
+`accounts reauth` and `accounts disconnect` always show an account chooser, including when only one account is connected. Choose a number from the provider, label, and email list, or press Enter to cancel. They take no account arguments or selection flags; internal account IDs are not displayed.
+
+Use `acadence help` or `acadence help accounts disconnect` for help. Command groups also support help, such as `acadence accounts help`. The `--help` and `-h` flags are not supported. To change a scheduled time, remove the old time and add the new one.
 
 Account connection runs the official provider login in a separate temporary profile and transfers credentials over HTTPS without printing tokens or changing your existing provider login. The CLI token is stored with mode 0600 in `~/.config/acadence/client.json`. Server credentials use AES-256-GCM; refreshed credentials remain on the server. Tokens expire after one year; `logout --all` revokes all CLI sessions.
 

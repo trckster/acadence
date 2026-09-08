@@ -67,14 +67,19 @@ Optional variables: `WORKER_CONCURRENCY` (default 4), `CODEX_MODEL`, `CLAUDE_MOD
 
 ### Automatic Coolify redeployment
 
-The GitHub Actions CI workflow triggers a Coolify redeployment after all checks pass for a push to `master`, including merged pull requests. Pull request builds, tags, and pushes to other branches do not deploy.
+GitHub sends push events directly to Coolify through a repository webhook. Coolify deploys updates to the application's configured source branch (`master`), including merged pull requests. Deployment starts independently of GitHub Actions CI and does not wait for its checks.
 
-Configure the Coolify application's source branch as `master` and disable Coolify's automatic Git push deployments so deployment waits for CI. Add these repository secrets under **Settings → Secrets and variables → Actions**:
+In Coolify, set the application's source branch to `master` and enable **Advanced → Auto Deploy**. Under **Webhook → Manual Git webhooks → GitHub**, copy the webhook URL and webhook secret.
 
-- `COOLIFY_WEBHOOK`: the application's **Webhook → Deploy webhook** URL, such as `https://coolify.example.com/api/v1/deploy?uuid=APPLICATION_UUID`. Remove any existing `force` query parameter; the workflow adds `force=true` to rebuild without cache. The URL must be reachable from GitHub-hosted runners.
-- `COOLIFY_TOKEN`: a Coolify API token created under **Keys & Tokens → API tokens** with **Deploy** permission.
+In the GitHub repository's **Settings → Webhooks**, configure an active webhook with:
 
-See the [Coolify GitHub Actions setup](https://coolify.io/docs/applications/ci-cd/github/actions/). Missing secrets, connection failures, and HTTP errors fail the deploy job. A successful job means Coolify accepted the deployment request; monitor the rollout and application health in Coolify.
+- **Payload URL**: the Coolify manual GitHub webhook URL (`https://cool.daniil.online/webhooks/source/github/events/manual`).
+- **Content type**: `application/x-www-form-urlencoded` (matching Termorize's setup).
+- **Secret**: the GitHub webhook secret from Coolify.
+- **SSL verification**: enabled.
+- **Events**: just the `push` event.
+
+No Coolify API token or GitHub Actions deployment secrets are required. Check **Recent Deliveries** in GitHub for webhook errors and monitor deployment progress and application health in Coolify. See the [Coolify automatic deployment guide](https://coolify.io/docs/applications/ci-cd/github/auto-deploy).
 
 ## Provider support boundary
 

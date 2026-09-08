@@ -50,7 +50,7 @@ export function formatError(error: unknown): string {
 }
 
 export function providerErrorMessage(code: string): string {
-  return ({ auth: 'authentication expired or rejected; run acadence accounts reauth',
+  return ({ auth: 'authentication expired or rejected; run acadence reauth',
     unavailable: 'provider unavailable', quota_schema: 'unsupported provider usage format',
     rate_limit: 'provider rate limit reached' } as Record<string, string>)[code] ?? code;
 }

@@ -14,7 +14,7 @@ const credentials = { auth_mode: 'chatgpt' as const, tokens: { access_token: 'a'
 function fixture(provider?: ProviderAdapter, path = ':memory:') {
   const store = new Store(path);
   store.run("INSERT INTO users(id,telegram_id,timezone,anchors) VALUES('u','123','UTC','[\"06:00\",\"13:00\"]')");
-  store.run("INSERT INTO accounts(id,user_id,provider,label,credentials) VALUES('a','u','codex','work',?)", vault.seal(credentials, 'a'));
+  store.run("INSERT INTO accounts(id,user_id,provider,category,credentials) VALUES('a','u','codex','work',?)", vault.seal(credentials, 'a'));
   const account = () => store.get<Account>("SELECT * FROM accounts WHERE id='a'")!;
   const engine = new Engine(store, vault, provider ?? { execute: async () => ({ windows: [] }) });
   return { store, account, engine };
@@ -161,7 +161,7 @@ test('slow provider operations cannot prevent another account anchor from being 
   const { store, account, engine } = fixture({ execute: async () => { await blocked; return null; } });
   const before = Date.parse('2026-09-08T05:59:59Z');
   store.run('UPDATE accounts SET next_poll=?', Date.now() + HOUR);
-  store.run("INSERT INTO accounts(id,user_id,provider,label,credentials,next_poll,next_session) VALUES('b','u','codex','other',?,?,?)", vault.seal(credentials, 'b'), Date.now() + HOUR, before + 1000);
+  store.run("INSERT INTO accounts(id,user_id,provider,category,credentials,next_poll,next_session) VALUES('b','u','codex','personal',?,?,?)", vault.seal(credentials, 'b'), Date.now() + HOUR, before + 1000);
   engine.enqueue(account(), 'manual', 'manual:a', before);
   const tick = engine.tick(before);
   await engine.tick(before + 1000);
@@ -198,7 +198,7 @@ test('reminders survive timestamp drift and restart, and repeat for the next win
       engine.reminders(now + 5000);
     }
     assert.deepEqual(store.all<{ body: string }>('SELECT body FROM notifications').map(n => n.body), [
-      'codex: email unavailable\n⏳ 5h: 20% used; resets in 1h 0m'
+      'codex / work / email unavailable\n⏳ 5h: 20% used; resets in 1h 0m'
     ]);
     store.close();
     const recovered = new Store(path);
@@ -224,7 +224,7 @@ test('notifications identify the provider account and format dates in the user t
   engine.observe(account(), { windows: [{ kind: 'weekly', used: 80, resetsAt: now + WEEK }] }, now - HOUR);
   engine.observe(account(), { windows: [{ kind: 'weekly', used: 0, resetsAt: now + WEEK }] }, now);
   assert.equal(store.get<{ body: string }>('SELECT body FROM notifications')!.body,
-    'codex: you@example.com\n🎁 Quota restored before the scheduled reset.\nWeek: 0% used; resets 2026-09-15 14:00');
+    'codex / work / you@example.com\n🎁 Quota restored before the scheduled reset.\nWeek: 0% used; resets 2026-09-15 14:00');
   store.close();
 });
 

@@ -25,14 +25,14 @@ async function fixture() {
   };
   return { store, vault, engine, telegram, app, login, close: async () => { await app.close(); store.close(); } };
 }
-const credentials = { auth_mode: 'chatgpt', tokens: { access_token: 'access-secret', refresh_token: 'refresh-secret', id_token: 'id-secret' } };
+const credentials = { auth_mode: 'chatgpt', tokens: { access_token: 'access-secret', refresh_token: 'refresh-secret', id_token: `header.${Buffer.from(JSON.stringify({ email: 'test@example.com' })).toString('base64url')}.signature` } };
 test('on-demand usage is scoped, fresh, locked against overlap, and hides stale data on failure', async () => {
   const f = await fixture();
   let release = () => {};
   try {
     const headers = await f.login(1);
     const other = await f.login(2);
-    const id = (await f.app.inject({ method: 'POST', url: '/v1/accounts', headers, payload: { provider: 'codex', label: 'personal', credentials } })).json().id;
+    const id = (await f.app.inject({ method: 'POST', url: '/v1/accounts', headers, payload: { provider: 'codex', category: 'personal', credentials } })).json().id;
     const url = `/v1/accounts/${id}/usage`;
     f.store.run('INSERT INTO windows(account_id,kind,used,resets_at,sampled_at) VALUES(?,?,?,?,?)', id, 'weekly', 99, null, 1);
     let calls = 0;
@@ -99,7 +99,7 @@ test('accounts, schedules, triggers and deletion stay within each tenant', async
   try {
     const a = await f.login(1);
     const b = await f.login(2);
-    const response = await f.app.inject({ method: 'POST', url: '/v1/accounts', headers: a, payload: { provider: 'codex', label: 'work', credentials } });
+    const response = await f.app.inject({ method: 'POST', url: '/v1/accounts', headers: a, payload: { provider: 'codex', category: 'work', credentials } });
     const id = response.json().id;
     assert.equal(response.statusCode, 200);
     assert.ok(!JSON.stringify(f.store.all('SELECT credentials FROM accounts')).includes('access-secret'));
@@ -131,7 +131,7 @@ test('validation and failed authentication never reflect credentials', async () 
   try {
     assert.equal((await f.app.inject({ url: '/v1/accounts' })).statusCode, 401);
     const headers = await f.login(1);
-    const result = await f.app.inject({ method: 'POST', url: '/v1/accounts', headers, payload: { provider: 'codex', label: 'work', credentials: { secret: 'super-sensitive' } } });
+    const result = await f.app.inject({ method: 'POST', url: '/v1/accounts', headers, payload: { provider: 'codex', category: 'work', credentials: { secret: 'super-sensitive' } } });
     assert.equal(result.statusCode, 400);
     assert.ok(!result.body.includes('super-sensitive'));
     assert.equal((await f.app.inject({ method: 'PUT', url: '/v1/schedule', headers, payload: { timezone: 'Not/Real', anchors: ['25:90'] } })).statusCode, 400);
@@ -152,5 +152,39 @@ test('Telegram outbox retains failures and sends only to the associated user', a
     assert.equal(sent[0].chat_id, '123');
     await telegram.send(Date.now() + 120_000);
     assert.equal(sent.length, 1);
+  } finally { await f.close(); }
+});
+
+
+test('account identity is service, type and email, and reauth preserves identity', async () => {
+  const f = await fixture();
+  try {
+    const headers = await f.login(1);
+    const other = await f.login(2);
+    const codex = (email: string) => ({ ...credentials, tokens: { ...credentials.tokens,
+      id_token: `header.${Buffer.from(JSON.stringify({ email })).toString('base64url')}.signature` } });
+    const connect = (email: string, category = 'personal', auth = headers) => f.app.inject({
+      method: 'POST', url: '/v1/accounts', headers: auth, payload: { provider: 'codex', category, credentials: codex(email) }
+    });
+    const first = await connect('first@example.com');
+    assert.equal(first.statusCode, 200);
+    assert.equal((await connect('second@example.com')).statusCode, 200);
+    assert.equal((await connect('FIRST@example.com')).statusCode, 409);
+    assert.equal((await connect('first@example.com', 'work')).statusCode, 200);
+    assert.equal((await connect('first@example.com', 'personal', other)).statusCode, 200);
+    assert.equal((await connect('third@example.com', 'arbitrary')).statusCode, 400);
+    assert.equal((await connect('invalid')).statusCode, 400);
+    const claude = await f.app.inject({ method: 'POST', url: '/v1/accounts', headers, payload: {
+      provider: 'claude', category: 'personal', credentials: { email: 'first@example.com', claudeAiOauth: {
+        accessToken: 'a', refreshToken: 'r', expiresAt: 123, scopes: []
+      } }
+    } });
+    assert.equal(claude.statusCode, 200);
+    const url = `/v1/accounts/${first.json().id}`;
+    assert.equal((await f.app.inject({ method: 'PUT', url, headers, payload: { credentials: codex('second@example.com') } })).statusCode, 409);
+    assert.equal((await f.app.inject({ method: 'PUT', url, headers, payload: { credentials: codex('FIRST@example.com') } })).statusCode, 200);
+    const rows = (await f.app.inject({ url: '/v1/accounts', headers })).json();
+    assert.equal(rows.length, 4);
+    assert.ok(rows.every((row: any) => !('label' in row) && row.category && row.email));
   } finally { await f.close(); }
 });

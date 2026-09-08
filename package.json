@@ -1,0 +1,39 @@
+{
+  "name": "acadence",
+  "version": "0.1.0",
+  "description": "Multi-user Claude Code and Codex usage window scheduler",
+  "type": "module",
+  "bin": {
+    "acadence": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsx src/server.ts",
+    "test": "tsx --test test/*.test.ts",
+    "check": "tsc --noEmit",
+    "prepack": "npm run build"
+  },
+  "license": "MIT",
+  "repository": "github:trckster/acadence",
+  "dependencies": {
+    "@fastify/rate-limit": "^11.2.0",
+    "@js-temporal/polyfill": "^0.5.1",
+    "commander": "^15.0.0",
+    "fastify": "^5.12.3",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.0",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
+  }
+}

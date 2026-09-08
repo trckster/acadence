@@ -67,6 +67,7 @@ export class Engine {
       this.store.run('DELETE FROM jobs WHERE account_id=?', account.id);
       this.store.notify(account.user_id, account.id, `auth:${account.id}:${account.version}`, `${account.label}: authentication expired or was rejected. Run acadence accounts reauth ${account.id}.`, now);
     } else if (attempts >= 3 || code === 'quota_schema') {
+      if (code === 'quota_schema') this.store.run("DELETE FROM jobs WHERE account_id=? AND reason IN ('scheduled','five_reset')", account.id);
       this.store.notify(account.user_id, account.id, `error:${account.id}:${code}:${Math.floor(now / (24 * HOUR))}`,
         `${account.label}: ${code === 'quota_schema' ? 'provider quota format is unsupported; check for an Acadence update' : 'provider requests repeatedly failed; Acadence will keep retrying'}.`, now);
     }
@@ -86,7 +87,7 @@ export class Engine {
     const user = this.store.get<User>('SELECT * FROM users WHERE id=?', account.user_id)!;
     const scheduled = job.reason === 'scheduled' || job.reason === 'five_reset';
     if (job.account_version !== account.version || (job.expires !== null && job.expires <= now) ||
-      (scheduled && (job.schedule_version !== user.schedule_version || !canContinue(this.store.schedule(user), now) && job.attempts > 0))) {
+      (scheduled && (job.schedule_version !== user.schedule_version || !canContinue(this.store.schedule(user), now) && (job.reason === 'five_reset' || job.attempts > 0)))) {
       this.store.run('DELETE FROM jobs WHERE id=?', job.id);
       return;
     }
@@ -127,7 +128,7 @@ export class Engine {
             if (initial.next_poll <= now) await this.poll(initial, now);
             const account = this.store.get<Account>('SELECT * FROM accounts WHERE id=?', initial.id);
             if (!account || account.status !== 'active') return;
-            if (account.next_session !== null && account.next_session <= now) {
+            if (account.last_error !== 'quota_schema' && account.next_session !== null && account.next_session <= now) {
               const user = this.store.get<User>('SELECT * FROM users WHERE id=?', account.user_id)!;
               if (now - account.next_session < 90_000) this.enqueue(account, 'scheduled', `schedule:${account.id}:${user.schedule_version}:${account.next_session}`, now, account.next_session + FIVE);
               this.store.run('UPDATE accounts SET next_session=? WHERE id=?', nextScheduled(this.store.schedule(user), now), account.id);

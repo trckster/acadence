@@ -8,9 +8,9 @@ import { parseCredentials } from './providers.js';
 import { hash, secret, Vault } from './security.js';
 import { Engine } from './engine.js';
 
-export async function createApi(store: Store, vault: Vault, engine: Engine, botUsername: string) {
-  const app = Fastify({ logger: false, bodyLimit: 128 * 1024, trustProxy: false });
-  await app.register(rateLimit, { max: 120, timeWindow: '1 minute' });
+export async function createApi(store: Store, vault: Vault, engine: Engine, botUsername: string, telegramHealthy = () => true) {
+  const app = Fastify({ logger: false, bodyLimit: 128 * 1024, trustProxy: Number(process.env.TRUST_PROXY_HOPS ?? 0) });
+  await app.register(rateLimit, { max: 120, timeWindow: '1 minute', keyGenerator: request => request.headers.authorization ? hash(request.headers.authorization) : request.ip });
   app.addHook('onSend', async (_request, reply) => {
     reply.header('cache-control', 'no-store');
     reply.header('x-content-type-options', 'nosniff');
@@ -30,8 +30,8 @@ export async function createApi(store: Store, vault: Vault, engine: Engine, botU
   const idle = (account: Account) => { if (engine.busy.has(account.id)) fail(409, 'Account operation in progress; retry shortly'); };
   app.get('/health', async (_request, reply) => {
     store.get('SELECT 1');
-    const healthy = Date.now() - engine.lastTick < 300_000;
-    return reply.code(healthy ? 200 : 503).send({ status: healthy ? 'ok' : 'worker_stalled' });
+    const healthy = Date.now() - engine.lastTick < 300_000 && telegramHealthy();
+    return reply.code(healthy ? 200 : 503).send({ status: healthy ? 'ok' : 'degraded' });
   });
   app.post('/v1/auth/device', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async request => {
     const { timezone } = z.object({ timezone: timezoneSchema }).parse(request.body);

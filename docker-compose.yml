@@ -1,0 +1,28 @@
+services:
+  acadence:
+    build: .
+    restart: unless-stopped
+    stop_grace_period: 3m
+    expose:
+      - "3000"
+    environment:
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?}
+      TRUST_PROXY_HOPS: 1
+      DATABASE_PATH: /data/acadence.sqlite
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      CODEX_MODEL: ${CODEX_MODEL:-}
+      CLAUDE_MODEL: ${CLAUDE_MODEL:-}
+    volumes:
+      - acadence-data:/data
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m,mode=1777
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 2g
+volumes:
+  acadence-data:

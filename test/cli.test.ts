@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, writeFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Store } from '../src/db.js';
@@ -22,7 +22,7 @@ async function runCli(args: string[], env: NodeJS.ProcessEnv, input = ''): Promi
 }
 
 test('help commands work at every level and removed commands and flags are rejected', async () => {
-  assert.equal((await runCli([], process.env)).trim(), '0.1.0');
+  assert.equal((await runCli([], process.env)).trim(), JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version);
   for (const path of [[], ['accounts'], ['accounts', 'disconnect'], ['schedule', 'add']]) {
     const output = await runCli(['help', ...path], process.env);
     assert.match(output, /Usage: acadence/);

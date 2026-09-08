@@ -213,7 +213,7 @@ function configureHelp(command: Command) {
     });
 }
 configureHelp(program);
-if (process.argv.length === 2) console.log('0.1.0');
+if (process.argv.length === 2) console.log(JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version);
 else program.parseAsync().catch(error => {
   console.error(error instanceof z.ZodError ? 'Invalid input or unsupported provider credential format' : formatError(error));
   process.exitCode = 1;

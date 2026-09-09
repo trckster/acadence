@@ -99,7 +99,7 @@ export class Engine {
     this.store.run('UPDATE accounts SET next_poll=? WHERE id=?', now + HOUR, account.id);
     try {
       const snapshot = await this.operate(account, 'poll');
-      if (snapshot) this.observe(account, snapshot, now);
+      if (snapshot) this.observe(account, snapshot, Date.now());
       return snapshot;
     } catch (error) {
       const failures = account.failures + 1;

@@ -363,3 +363,27 @@ test('expiry planning cannot replace a manual request when a poll finds a new wi
     assert.equal(store.all('SELECT * FROM jobs').length, 0);
   } finally { store.close(); }
 });
+
+test('expiry during a usage poll queues an opening before the idle response clears its deadline', async t => {
+  const now = Date.parse('2026-09-09T12:59:59Z');
+  t.mock.timers.enable({ apis: ['Date'], now });
+  const actions: string[] = [];
+  const { store, account, engine } = fixture({ execute: async (_provider, _credentials, action) => {
+    actions.push(action);
+    if (action === 'poll') {
+      t.mock.timers.tick(3000);
+      return { windows: [{ kind: 'five_hour', used: 0, resetsAt: null }] };
+    }
+    return null;
+  } });
+  try {
+    store.run("UPDATE users SET anchors='[]'");
+    engine.observe(account(), { windows: [{ kind: 'five_hour', used: 80, resetsAt: now + 1000 }] }, now - HOUR);
+    await engine.tick(now);
+    assert.deepEqual(actions, ['poll', 'open']);
+    t.mock.timers.tick(5000);
+    await engine.tick(Date.now());
+    assert.deepEqual(actions, ['poll', 'open']);
+    assert.equal(store.all('SELECT * FROM jobs').length, 0);
+  } finally { store.close(); }
+});

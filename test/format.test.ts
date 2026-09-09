@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatReset, formatTimestamp } from '../src/format.js';
+import { formatReset, formatTimestamp, formatUsage } from '../src/format.js';
+
+test('idle usage has no reset countdown while rounded-zero active usage does', () => {
+  const now = Date.parse('2026-09-09T08:17:53Z');
+  assert.equal(formatUsage({ kind: 'five_hour', used: 0, resetsAt: null }, now), '5h: 0% used; not active');
+  assert.equal(formatUsage({ kind: 'weekly', used: 0, resetsAt: null }, now), 'Week: 0% used; not active');
+  assert.equal(formatUsage({ kind: 'five_hour', used: 0, resetsAt: now + 299 * 60_000 }, now), '5h: 0% used; resets in 4h 59m');
+});
 
 test('timestamps use local time with YYYY-MM-DD and a 24-hour clock', () => {
   assert.equal(formatTimestamp(new Date(2026, 8, 8, 17, 3).getTime()), '2026-09-08 17:03');

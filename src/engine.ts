@@ -17,10 +17,11 @@ export class Engine {
     const existing = this.store.get<Job>('SELECT * FROM jobs WHERE account_id=?', account.id);
     if (existing?.dedupe === dedupe) return;
     if (existing) {
-      const priority: Record<string, number> = { weekly_reset: 0, manual: 1, anchor: 2, scheduled: 2, five_reset: 3 };
+      const priority: Record<string, number> = { weekly_reset: 0, manual: 1, expiry: 2, anchor: 3, scheduled: 3, five_reset: 4 };
       const promote = priority[reason]! <= priority[existing.reason]!;
       this.store.run('UPDATE jobs SET reason=?,dedupe=?,due=MIN(due,?),account_version=?,schedule_version=?,expires=? WHERE id=?',
-        promote ? reason : existing.reason, promote ? dedupe : existing.dedupe, now, account.version,
+        promote ? reason : existing.reason, promote ? dedupe : existing.dedupe,
+        !promote && existing.attempts > 0 ? existing.due : now, account.version,
         user.schedule_version, promote ? expires : existing.expires, existing.id);
     } else {
       this.store.run('INSERT INTO jobs(account_id,reason,dedupe,due,account_version,schedule_version,expires) VALUES(?,?,?,?,?,?,?)',
@@ -39,6 +40,13 @@ export class Engine {
       this.store.run('UPDATE windows SET present=0 WHERE account_id=?', account.id);
       for (const window of snapshot.windows) {
         const old = previous.find(w => w.kind === window.kind);
+        // Preserve the expiry before an idle response clears its timestamp.
+        // A future deadline means another client has already opened the next window.
+        if (old?.present && old.resets_at !== null && old.resets_at <= now &&
+            (account.last_success === null || account.last_success < old.resets_at) &&
+            (window.resetsAt !== null ? window.resetsAt <= now : window.used === 0)) {
+          this.enqueue(account, 'expiry', `expiry:${account.id}`, now);
+        }
         const reset = !!old?.present && resetDetected({ kind: old.kind, used: old.used, resetsAt: old.resets_at }, window, now);
         const rollover = !!old?.present && windowRolledOver({ kind: old.kind, used: old.used, resetsAt: old.resets_at }, window, now);
         const generation = (old?.generation ?? 0) + (reset || rollover || !!old && !old.present ? 1 : 0);
@@ -82,7 +90,7 @@ export class Engine {
       this.store.run('DELETE FROM jobs WHERE account_id=?', account.id);
       this.store.notify(account.user_id, account.id, `auth:${account.id}:${account.version}`, `⚠️ ${this.accountName(account)}\nAuthentication expired or was rejected. Run acadence reauth.`, now);
     } else if (attempts >= 3 || code === 'quota_schema') {
-      if (code === 'quota_schema') this.store.run("DELETE FROM jobs WHERE account_id=? AND reason IN ('anchor','scheduled','five_reset')", account.id);
+      if (code === 'quota_schema') this.store.run("DELETE FROM jobs WHERE account_id=? AND reason IN ('anchor','scheduled','five_reset','expiry')", account.id);
       this.store.notify(account.user_id, account.id, `error:${account.id}:${code}:${Math.floor(now / (24 * HOUR))}`,
         `⚠️ ${this.accountName(account)}\n${code === 'quota_schema' ? 'provider quota format is unsupported; check for an Acadence update' : 'provider requests repeatedly failed; Acadence will keep retrying'}.`, now);
     }
@@ -91,7 +99,7 @@ export class Engine {
     this.store.run('UPDATE accounts SET next_poll=? WHERE id=?', now + HOUR, account.id);
     try {
       const snapshot = await this.operate(account, 'poll');
-      if (snapshot) this.observe(account, snapshot, now);
+      if (snapshot) this.observe(account, snapshot, Date.now());
       return snapshot;
     } catch (error) {
       const failures = account.failures + 1;
@@ -107,6 +115,14 @@ export class Engine {
       (scheduled && (job.schedule_version !== user.schedule_version || job.reason !== 'anchor' && !canContinue(this.store.schedule(user), now) && (job.reason === 'five_reset' || job.attempts > 0)))) {
       this.store.run('DELETE FROM jobs WHERE id=?', job.id);
       return;
+    }
+    if (job.reason === 'expiry') {
+      const windows = this.store.all<WindowRow>('SELECT * FROM windows WHERE account_id=? AND present=1', account.id);
+      if (!windows.some(window => window.resets_at === null ? window.used === 0 :
+          window.resets_at <= now && (account.last_success === null || account.last_success < window.resets_at))) {
+        this.store.run('DELETE FROM jobs WHERE id=?', job.id);
+        return;
+      }
     }
     try {
       await this.operate(account, 'open');
@@ -135,6 +151,13 @@ export class Engine {
   }
   plan(now: number) {
     this.store.transaction(() => {
+      // Inspect persisted deadlines every worker tick, independently of hourly
+      // polling and fixed schedule slots. last_success prevents reopening the
+      // same expired window while provider usage reporting catches up.
+      const expired = this.store.all<Account>(`SELECT DISTINCT a.* FROM accounts a JOIN windows w ON w.account_id=a.id
+        WHERE a.status='active' AND (a.last_error IS NULL OR a.last_error!='quota_schema')
+        AND w.present=1 AND w.resets_at<=? AND (a.last_success IS NULL OR a.last_success<w.resets_at)`, now);
+      for (const account of expired) this.enqueue(account, 'expiry', `expiry:${account.id}`, now);
       const due = this.store.all<Account>("SELECT * FROM accounts WHERE status='active' AND (last_error IS NULL OR last_error!='quota_schema') AND next_session<=?", now);
       for (const account of due) {
         const user = this.store.get<User>('SELECT * FROM users WHERE id=?', account.user_id)!;

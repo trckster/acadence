@@ -92,6 +92,36 @@ export function parseCodexUsage(value: unknown): Snapshot {
   return { windows };
 }
 
+function mayBeIdleCodexWindow(window: Window, startedAt: number, completedAt: number): boolean {
+  if (window.used !== 0 || window.resetsAt === null) return false;
+  const duration = (window.kind === 'five_hour' ? 300 : 10080) * 60_000;
+  const inferredStart = window.resetsAt - duration;
+  // Codex can report now + duration for an unstarted window. Allow for
+  // request latency and the protocol's whole-second timestamps.
+  return inferredStart >= startedAt - 1000 && inferredStart <= completedAt + 1000;
+}
+
+async function readCodexUsage(rpc: CodexRpc): Promise<Snapshot> {
+  const startedAt = Date.now();
+  const first = parseCodexUsage(await rpc.call('account/rateLimits/read'));
+  const completedAt = Date.now();
+  const candidates = first.windows.filter(window => mayBeIdleCodexWindow(window, startedAt, completedAt));
+  if (!candidates.length) return first;
+
+  // A real, newly started window can also round to 0%. Confirm that its
+  // deadline slides before clearing it; a fixed deadline must keep counting.
+  await new Promise(resolve => setTimeout(resolve, 2100));
+  const secondStartedAt = Date.now();
+  const second = parseCodexUsage(await rpc.call('account/rateLimits/read'));
+  const secondCompletedAt = Date.now();
+  for (const window of second.windows) {
+    const previous = candidates.find(candidate => candidate.kind === window.kind);
+    if (previous && mayBeIdleCodexWindow(window, secondStartedAt, secondCompletedAt) &&
+        window.resetsAt! - previous.resetsAt! > 1000) window.resetsAt = null;
+  }
+  return second;
+}
+
 export function cleanEnvironment(home: string): NodeJS.ProcessEnv {
   return {
     PATH: process.env.PATH, VOLTA_HOME: process.env.VOLTA_HOME ?? join(homedir(), '.volta'), HOME: home, USERPROFILE: home, TMPDIR: tmpdir(),
@@ -173,7 +203,7 @@ class CodexRpc {
     const { thread } = await this.call('thread/start', {
       cwd, approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true,
       baseInstructions: 'Reply with hello only. Do not use tools.',
-      ...(process.env.CODEX_MODEL ? { model: process.env.CODEX_MODEL } : {})
+      model: process.env.CODEX_MODEL || 'gpt-5.6-luna'
     });
     const { turn } = await this.call('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'Hello. Reply with hello only.', text_elements: [] }] });
     const deadline = Date.now() + 90_000;
@@ -217,7 +247,7 @@ export class Providers implements ProviderAdapter {
         await rpc.initialize();
         await rpc.call('account/read', { refreshToken: true });
         if (action === 'open') { await rpc.open(cwd); return null; }
-        return parseCodexUsage(await rpc.call('account/rateLimits/read'));
+        return await readCodexUsage(rpc);
       }
       let data = claudeCredentials.parse(credentials);
       const refresh = async () => {

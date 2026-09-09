@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { spawn } from 'node:child_process';
-import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { anchorSchema, timezoneSchema, type Provider, type Schedule } from './domain.js';
-import { accountEmail, claudeAccountEmail, cleanEnvironment, parseCredentials, runProcess } from './providers.js';
+import { accountCategory, accountEmail, claudeAccountEmail, cleanEnvironment, parseCredentials, runProcess } from './providers.js';
 import { formatUsage } from './format.js';
 import { select } from './select.js';
 import { fetchWithContext, responseJson, requestTarget, RequestError, formatError, providerErrorMessage } from './errors.js';
@@ -117,18 +116,20 @@ program.command('logout').option('--all', 'Revoke all CLI sessions').action(asyn
 async function connectAccount(provider: string, options: { type?: string }) {
   const type = z.enum(['claude','codex']).parse(provider);
   await config();
-  const category = options.type === undefined
-    ? await select('Choose an account type:', [{ label: 'Personal', value: 'personal' }, { label: 'Work', value: 'work' }])
-    : z.enum(['personal','work']).parse(options.type);
-  if (!category) { console.log('Cancelled'); return; }
+  const explicitCategory = options.type === undefined ? undefined : z.enum(['personal','work']).parse(options.type);
   await credentials(type, async data => {
     const email = accountEmail(parseCredentials(type, data));
     if (!email) throw new Error('Could not determine account email; sign in again');
+    const category = explicitCategory ?? accountCategory(parseCredentials(type, data)) ?? await select(
+      'Could not detect account type from the subscription. Choose an account type:',
+      [{ label: 'Personal', value: 'personal' }, { label: 'Work', value: 'work' }]
+    );
+    if (!category) { console.log('Cancelled'); return; }
     await request('/v1/accounts', 'POST', { provider: type, category, credentials: data });
     console.log(`Connected ${type} / ${category} / ${email}`);
   });
 }
-program.command('connect [provider]').description('Connect an account, optionally choosing the provider directly').option('--type <type>', 'Account type: personal or work').action(async (selectedProvider: string | undefined, options) => {
+program.command('connect [provider]').description('Connect an account, optionally choosing the provider directly').option('--type <type>', 'Override detected account type: personal or work').action(async (selectedProvider: string | undefined, options) => {
   await config();
   const provider = selectedProvider ?? await select<Provider>('Choose an account provider:', [
     { label: 'Claude Code', value: 'claude' },
@@ -169,24 +170,12 @@ program.command('see').description('Fetch current usage and status for every con
 async function chooseAccount(action: string) {
   const rows = await request('/v1/accounts');
   if (!rows.length) { console.log('No accounts connected'); return; }
-  console.log(`Choose an account to ${action}:`);
-  rows.forEach((row: any, index: number) => {
-    console.log(`  ${index + 1}. ${row.provider} / ${row.category} / ${row.email ?? 'email unavailable'} (${row.status.replaceAll('_', ' ')})`);
-  });
-  const input = createInterface({ input: process.stdin, output: process.stdout });
-  const prompt = () => process.stdout.write('Account number (Enter to cancel): ');
-  try {
-    prompt();
-    for await (const line of input) {
-      const value = line.trim();
-      if (!value) break;
-      const number = Number(value);
-      if (/^[0-9]+$/.test(value) && Number.isSafeInteger(number) && number >= 1 && number <= rows.length) return rows[number - 1];
-      console.log(`Enter a number from 1 to ${rows.length}.`);
-      prompt();
-    }
-    console.log('Cancelled');
-  } finally { input.close(); }
+  const account = await select<{ id: string; provider: Provider }>(`Choose an account to ${action}:`, rows.map((row: any) => ({
+    label: `${row.provider} / ${row.category} / ${row.email ?? 'email unavailable'} (${row.status.replaceAll('_', ' ')})`,
+    value: row
+  })));
+  if (!account) console.log('Cancelled');
+  return account;
 }
 program.command('disconnect').description('Choose an account to disconnect').action(async () => {
   const account = await chooseAccount('disconnect');

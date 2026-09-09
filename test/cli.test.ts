@@ -106,20 +106,20 @@ test('see fetches owned accounts and never displays stale windows', async () => 
     for (const action of ['disconnect', 'reauth']) {
       await assert.rejects(cli(action, 'new'), /too many arguments/);
       await assert.rejects(cli(action, '--provider', 'codex'), /unknown option/);
-      assert.match(await choose(action, '\n'), /Cancelled/);
+      assert.match(await choose(action, '\x1b'), /Cancelled/);
       assert.match(await choose(action, ''), /Cancelled/);
     }
     assert.equal(store.all('SELECT id FROM accounts').length, 4);
-    const selection = await choose('disconnect', '0\n99\nabc\n2\n');
-    assert.match(selection, /Enter a number from 1 to 3/);
-    assert.match(selection, /2\. codex \/ personal \/ work@example.com/);
-    assert.match(selection, /1\. claude \/ work \/ work@example.com/);
+    const selection = await choose('disconnect', '0299abc\x1b[B\r');
+    assert.doesNotMatch(selection, /Account number|Enter a number|\d\. /);
+    assert.match(selection, /❯ codex \/ personal \/ work@example.com/);
+    assert.match(selection, /❯ claude \/ work \/ work@example.com/);
     assert.doesNotMatch(selection, /private-other-user|foreign/);
     assert.equal(store.get('SELECT id FROM accounts WHERE id=?', 'new'), undefined);
-    await choose('disconnect', '1\n');
-    assert.match(await choose('disconnect', '\n'), /Choose an account/);
+    await choose('disconnect', '\r');
+    assert.match(await choose('disconnect', '\x1b'), /Choose an account/);
     assert.equal(store.all('SELECT id FROM accounts').length, 2);
-    await choose('disconnect', '1\n');
+    await choose('disconnect', '\r');
     assert.equal((await choose('disconnect', '')).trim(), 'No accounts connected');
     assert.equal((await choose('reauth', '')).trim(), 'No accounts connected');
     assert.equal((await cli()).trim(), 'No accounts connected');
@@ -143,7 +143,7 @@ test('CLI completes login, isolated provider connection, scheduling, trigger and
     await writeFile(join(bin, 'codex'), `#!${process.execPath}
 const fs = require('node:fs');
 if (process.argv[2] !== 'login') process.exit(1);
-fs.writeFileSync(process.env.CODEX_HOME + '/auth.json', JSON.stringify({auth_mode:'chatgpt', tokens:{access_token:'test-access',refresh_token:'test-refresh',id_token:'header.' + Buffer.from(JSON.stringify({email:'test@example.com'})).toString('base64url') + '.signature'}}));
+fs.writeFileSync(process.env.CODEX_HOME + '/auth.json', JSON.stringify({auth_mode:'chatgpt', tokens:{access_token:'test-access',refresh_token:'test-refresh',id_token:'header.' + Buffer.from(JSON.stringify({email:'test@example.com','https://api.openai.com/auth':{chatgpt_plan_type:'plus'}})).toString('base64url') + '.signature'}}));
 `, { mode: 0o700 });
     await writeFile(join(bin, 'xdg-open'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
     const env = { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}` };
@@ -172,7 +172,7 @@ fs.writeFileSync(process.env.CODEX_HOME + '/auth.json', JSON.stringify({auth_mod
     assert.match(await runCli(['connect'], env, '\x03'), /Cancelled/);
     assert.match(await runCli(['connect'], env), /Cancelled/);
     assert.equal(store.all('SELECT * FROM accounts').length, 0);
-    const connected = await runCli(['connect', '--type', 'personal'], env, '\x1b[B\x1b[A\x1b[A\r');
+    const connected = await runCli(['connect'], env, '\x1b[B\x1b[A\x1b[A\r');
     assert.match(connected, /❯ Codex/);
     assert.doesNotMatch(connected, /Provider number/);
     assert.match(connected, /Connected codex \/ personal \/ test@example.com/);
@@ -180,10 +180,21 @@ fs.writeFileSync(process.env.CODEX_HOME + '/auth.json', JSON.stringify({auth_mod
     await assert.rejects(cli('connect', 'codex', '--label', 'second'), /unknown option/);
     await assert.rejects(cli('connect', 'codex', '--type', 'other'), /Invalid input/);
     await assert.rejects(cli('connect', 'codex', '--type', 'personal'), /already connected/);
+    assert.doesNotMatch(connected, /Choose an account type/);
+    const providerScript = join(bin, 'codex');
+    await writeFile(providerScript, (await readFile(providerScript, 'utf8')).replace("chatgpt_plan_type:'plus'", "chatgpt_plan_type:'future-plan'"));
     assert.match(await runCli(['connect', 'codex'], env, '\x1b'), /Cancelled/);
+    assert.equal(store.all('SELECT * FROM accounts').length, 1);
     const work = await runCli(['connect', 'codex'], env, '\x1b[B\r');
+    assert.match(work, /Could not detect account type/);
     assert.match(work, /Connected codex \/ work \/ test@example.com/);
-    await runCli(['disconnect'], env, '2\n');
+    await runCli(['disconnect'], env, '\x1b[B\r');
+    await writeFile(providerScript, (await readFile(providerScript, 'utf8')).replace("chatgpt_plan_type:'future-plan'", "chatgpt_plan_type:'business'"));
+    const detectedWork = await cli('connect', 'codex');
+    assert.match(detectedWork, /Connected codex \/ work \/ test@example.com/);
+    assert.doesNotMatch(detectedWork, /Choose an account type/);
+    await assert.rejects(cli('connect', 'codex', '--type', 'personal'), /already connected/);
+    await runCli(['disconnect'], env, '\x1b[B\r');
     await cli('schedule','add','06:00');
     await cli('schedule','remove','06:00');
     await cli('schedule','add','07:00');
@@ -191,10 +202,10 @@ fs.writeFileSync(process.env.CODEX_HOME + '/auth.json', JSON.stringify({auth_mod
     assert.match(await cli('trigger'), /Queued 1/);
     assert.match(await cli('see'), /codex \/ personal \/ test@example.com/);
     const id = store.get<{ id: string }>('SELECT id FROM accounts')!.id;
-    const reauth = await runCli(['reauth'], env, '1\n');
+    const reauth = await runCli(['reauth'], env, '\r');
     assert.match(reauth, /Authentication updated/);
     assert.doesNotMatch(reauth, new RegExp(id));
-    const disconnected = await runCli(['disconnect'], env, '1\n');
+    const disconnected = await runCli(['disconnect'], env, '\r');
     assert.match(disconnected, /Disconnected/);
     assert.doesNotMatch(disconnected, new RegExp(id));
     assert.equal(store.get('SELECT id FROM accounts WHERE id=?', id), undefined);

@@ -26,7 +26,7 @@ acadence schedule add 06:00
 acadence see
 ```
 
-Use ↑/↓ and Enter to choose a service (Claude Code or Codex), then an account type (Personal or Work). Esc cancels. Sign in to the account you want to connect; its email is detected automatically. You can also use `acadence connect codex --type personal` (or `claude`) to choose the provider directly. Use `acadence disconnect` to choose an account to remove. Run `acadence` or `acadence help` for all commands and the current version.
+Use ↑/↓ and Enter to choose a service (Claude Code or Codex), then sign in. Its email and Personal/Work type are detected from sign-in metadata: individual subscriptions are Personal; team, business, education, and enterprise subscriptions are Work. If the subscription type is missing or unrecognized, an arrow menu asks you to choose. Esc cancels any menu. You can also use `acadence connect codex --type personal` (or `claude`) to choose the provider directly and override type detection. Both `acadence disconnect` and `acadence reauth` use ↑/↓ and Enter to select an account. Run `acadence` or `acadence help` for all commands and the current version.
 
 Accounts are identified by service, type (`personal` or `work`), and the email read from sign-in. Multiple accounts of the same service and type can use different emails. Reconnecting the same combination prompts you to use `acadence reauth`. Custom labels are no longer supported. On server upgrade, existing `work` labels become work accounts; all other labels become personal. Existing credentials, schedules, and usage history are preserved.
 

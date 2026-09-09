@@ -292,7 +292,7 @@ test('expiry opens on the next tick, survives restart, and does not repeat on st
 });
 
 test('expiry retries retain backoff across ticks and ignore nearby anchors', async t => {
-  const now = Date.parse('2026-09-09T12:59:00Z');
+  const now = Date.parse('2026-09-09T12:59:55Z');
   t.mock.timers.enable({ apis: ['Date'], now });
   let attempts = 0;
   const { store, account, engine } = fixture({ execute: async () => {
@@ -344,5 +344,22 @@ test('weekly-only accounts reopen on expiry without daily schedule slots', async
     await engine.tick(now);
     await engine.tick(now + 5000);
     assert.equal(opens, 1);
+  } finally { store.close(); }
+});
+
+test('expiry planning cannot replace a manual request when a poll finds a new window', async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ['Date'], now });
+  const actions: string[] = [];
+  const { store, account, engine } = fixture({ execute: async (_provider, _credentials, action) => {
+    actions.push(action);
+    return action === 'poll' ? { windows: [{ kind: 'five_hour', used: 0, resetsAt: now + FIVE }] } : null;
+  } });
+  try {
+    engine.observe(account(), { windows: [{ kind: 'five_hour', used: 50, resetsAt: now }] }, now - HOUR);
+    engine.enqueue(account(), 'manual', 'manual:a', now);
+    await engine.tick(now);
+    assert.deepEqual(actions, ['poll', 'open']);
+    assert.equal(store.all('SELECT * FROM jobs').length, 0);
   } finally { store.close(); }
 });

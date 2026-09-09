@@ -17,10 +17,11 @@ export class Engine {
     const existing = this.store.get<Job>('SELECT * FROM jobs WHERE account_id=?', account.id);
     if (existing?.dedupe === dedupe) return;
     if (existing) {
-      const priority: Record<string, number> = { weekly_reset: 0, manual: 1, expiry: 1, anchor: 2, scheduled: 2, five_reset: 3 };
+      const priority: Record<string, number> = { weekly_reset: 0, manual: 1, expiry: 2, anchor: 3, scheduled: 3, five_reset: 4 };
       const promote = priority[reason]! <= priority[existing.reason]!;
       this.store.run('UPDATE jobs SET reason=?,dedupe=?,due=MIN(due,?),account_version=?,schedule_version=?,expires=? WHERE id=?',
-        promote ? reason : existing.reason, promote ? dedupe : existing.dedupe, now, account.version,
+        promote ? reason : existing.reason, promote ? dedupe : existing.dedupe,
+        !promote && existing.attempts > 0 ? existing.due : now, account.version,
         user.schedule_version, promote ? expires : existing.expires, existing.id);
     } else {
       this.store.run('INSERT INTO jobs(account_id,reason,dedupe,due,account_version,schedule_version,expires) VALUES(?,?,?,?,?,?,?)',

@@ -10,6 +10,7 @@ import { anchorSchema, timezoneSchema, type Provider, type Schedule } from './do
 import { accountCategory, accountEmail, claudeAccountEmail, cleanEnvironment, parseCredentials, runProcess } from './providers.js';
 import { formatUsage } from './format.js';
 import { select } from './select.js';
+import { withSpinner } from './spinner.js';
 import { fetchWithContext, responseJson, requestTarget, RequestError, formatError, providerErrorMessage } from './errors.js';
 
 process.umask(0o077);
@@ -139,17 +140,20 @@ program.command('connect [provider]').description('Connect an account, optionall
   await connectAccount(provider, options);
 });
 async function showAccounts() {
-  const rows = await request('/v1/accounts');
-  for (let i = 0; i < rows.length; i += 4) {
-    await Promise.all(rows.slice(i, i + 4).map(async (row: any) => {
-      row.limits = [];
-      try {
-        Object.assign(row, await request(`/v1/accounts/${encodeURIComponent(row.id)}/usage`, 'POST', {}, undefined, 120_000));
-      } catch (error) {
-        row.refreshError = formatError(error);
-      }
-    }));
-  }
+  const rows = await withSpinner('Loading account usage…', async () => {
+    const rows = await request('/v1/accounts');
+    for (let i = 0; i < rows.length; i += 4) {
+      await Promise.all(rows.slice(i, i + 4).map(async (row: any) => {
+        row.limits = [];
+        try {
+          Object.assign(row, await request(`/v1/accounts/${encodeURIComponent(row.id)}/usage`, 'POST', {}, undefined, 120_000));
+        } catch (error) {
+          row.refreshError = formatError(error);
+        }
+      }));
+    }
+    return rows;
+  });
   const now = Date.now();
   if (!rows.length) { console.log('No accounts connected'); return; }
   for (const row of rows) {

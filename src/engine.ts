@@ -1,7 +1,7 @@
 import { Store, type Account, type Job, type User, type WindowRow } from './db.js';
-import { anchorsAround, canContinue, FIVE, HOUR, nextAnchor, nextScheduled, resetDetected, windowRolledOver, type Snapshot } from './domain.js';
+import { anchorsAround, canContinue, FIVE, HOUR, nextAnchor, nextScheduled, resetDetected, windowRolledOver, type Snapshot, type Window } from './domain.js';
 import { accountEmail, type Credentials, type ProviderAdapter, ProviderError } from './providers.js';
-import { formatUsage } from './format.js';
+import { formatReset } from './format.js';
 import { Vault } from './security.js';
 
 export class Engine {
@@ -19,6 +19,11 @@ export class Engine {
   }
   private accountName(account: Pick<Account, 'id' | 'provider' | 'category' | 'credentials'>) {
     return `${account.provider} / ${account.category} / ${accountEmail(this.vault.open<Credentials>(account.credentials, account.id)) ?? 'email unavailable'}`;
+  }
+  private formatQuota(window: Window, now: number, timezone: string) {
+    const left = Number(Math.max(0, Math.min(100, 100 - window.used)).toFixed(2));
+    const label = window.kind === 'five_hour' ? '5h' : 'Week';
+    return `${label}: ${left}% left; ${window.resetsAt === null ? 'not active' : `resets ${formatReset(window.resetsAt, now, timezone)}`}`;
   }
   enqueue(account: Account, reason: string, dedupe: string, now: number, expires: number | null = null) {
     const user = this.store.get<User>('SELECT * FROM users WHERE id=?', account.user_id)!;
@@ -65,7 +70,7 @@ export class Engine {
         account.id, window.kind, window.used, window.resetsAt, generation, now);
         if (reset) {
           resets.push(`${window.kind}:${generation}`);
-          this.store.notify(account.user_id, account.id, `reset:${account.id}:${window.kind}:${generation}`, `${this.accountName(account)}\n🎁 Quota restored before the scheduled reset.\n${formatUsage(window, now, user.timezone)}`, now);
+          this.store.notify(account.user_id, account.id, `reset:${account.id}:${window.kind}:${generation}`, `${this.accountName(account)}\n🎁 Quota restored before the scheduled reset.\n${this.formatQuota(window, now, user.timezone)}`, now);
           if (window.kind === 'weekly') weeklyReset = true;
           else fiveReset = true;
         }
@@ -172,7 +177,7 @@ export class Engine {
   }
   reminders(now: number) {
     const rows = this.store.all<WindowRow & { user_id: string; timezone: string }>(`SELECT w.*,a.user_id,u.timezone FROM windows w JOIN accounts a ON a.id=w.account_id JOIN users u ON u.id=a.user_id
-      WHERE w.present=1 AND a.status='active' AND w.resets_at>?`, now);
+      WHERE w.present=1 AND a.status='active' AND w.used<=97 AND w.resets_at>?`, now);
     for (const window of rows) {
       // A short-window reminder is not actionable while weekly quota is exhausted.
       if (window.kind === 'five_hour' && this.store.get(`SELECT account_id FROM windows
@@ -184,7 +189,7 @@ export class Engine {
         // Honor reminders persisted by older versions, whose keys included the exact expiry.
         if (this.store.get('SELECT id FROM notifications WHERE dedupe=? OR dedupe LIKE ?', dedupe, `${dedupe}:%`)) continue;
         this.store.notify(window.user_id, window.account_id, dedupe,
-          `${this.accountName(this.store.get<Account>('SELECT * FROM accounts WHERE id=?', window.account_id)!)}\n⏳ ${formatUsage({ kind: window.kind, used: window.used, resetsAt: window.resets_at }, now, window.timezone)}`, now);
+          `${this.accountName(this.store.get<Account>('SELECT * FROM accounts WHERE id=?', window.account_id)!)}\n⏳ ${this.formatQuota({ kind: window.kind, used: window.used, resetsAt: window.resets_at }, now, window.timezone)}`, now);
       }
     }
   }

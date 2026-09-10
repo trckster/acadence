@@ -235,18 +235,17 @@ test('ordinary expiry queues one opening without a quota-restoration notificatio
   store.close();
 });
 
-test('exhausted weekly quota suppresses only five-hour reminders without consuming their dedupe', () => {
+test('exhausted weekly quota suppresses five-hour reminders without consuming their dedupe', () => {
   for (const resetOffset of [null, 12 * HOUR, WEEK]) {
     const { store, account, engine } = fixture();
     const now = Date.parse('2026-09-08T12:00:00Z');
     engine.observe(account(), { windows: [
-      { kind: 'five_hour', used: 98, resetsAt: now + HOUR },
+      { kind: 'five_hour', used: 97, resetsAt: now + HOUR },
       { kind: 'weekly', used: 100, resetsAt: resetOffset === null ? null : now + resetOffset }
     ] }, now);
     engine.reminders(now);
     const reminders = store.all<{ body: string }>('SELECT body FROM notifications');
-    assert.equal(reminders.length, resetOffset === 12 * HOUR ? 1 : 0);
-    if (reminders.length) assert.match(reminders[0]!.body, /Week:/);
+    assert.equal(reminders.length, 0);
     store.run("UPDATE windows SET used=99 WHERE kind='weekly'");
     engine.reminders(now + 1000);
     engine.reminders(now + 2000);
@@ -255,12 +254,28 @@ test('exhausted weekly quota suppresses only five-hour reminders without consumi
   }
 });
 
+test('ending-window reminders require at least three percent remaining in that window', () => {
+  for (const kind of ['five_hour', 'weekly'] as const) {
+    for (const used of [0, 96.5, 97, 97.01, 98, 100]) {
+      const { store, account, engine } = fixture();
+      const now = Date.parse('2026-09-08T12:00:00Z');
+      engine.observe(account(), { windows: [{ kind, used, resetsAt: now + HOUR }] }, now);
+      engine.reminders(now);
+      const notifications = store.all<{ body: string }>('SELECT body FROM notifications');
+      assert.equal(notifications.length, used <= 97 ? 1 : 0, `${kind}: ${used}% used`);
+      if (used <= 97) assert.equal(notifications[0]!.body,
+        `codex / work / email unavailable\n⏳ ${kind === 'five_hour' ? '5h' : 'Week'}: ${100 - used}% left; resets in 1h 0m`);
+      store.close();
+    }
+  }
+});
+
 test('expired or absent weekly quota does not suppress five-hour reminders', () => {
   for (const present of [0, 1]) {
     const { store, account, engine } = fixture();
     const now = Date.parse('2026-09-08T12:00:00Z');
     engine.observe(account(), { windows: [
-      { kind: 'five_hour', used: 98, resetsAt: now + HOUR },
+      { kind: 'five_hour', used: 97, resetsAt: now + HOUR },
       { kind: 'weekly', used: 100, resetsAt: present ? now : now + WEEK }
     ] }, now);
     store.run("UPDATE windows SET present=? WHERE kind='weekly'", present);
@@ -283,7 +298,7 @@ test('reminders survive timestamp drift and restart, and repeat for the next win
       engine.reminders(now + 5000);
     }
     assert.deepEqual(store.all<{ body: string }>('SELECT body FROM notifications').map(n => n.body), [
-      'codex / work / email unavailable\n⏳ 5h: 20% used; resets in 1h 0m'
+      'codex / work / email unavailable\n⏳ 5h: 80% left; resets in 1h 0m'
     ]);
     store.close();
     const recovered = new Store(path);
@@ -309,7 +324,7 @@ test('notifications identify the provider account and format dates in the user t
   engine.observe(account(), { windows: [{ kind: 'weekly', used: 80, resetsAt: now + WEEK }] }, now - HOUR);
   engine.observe(account(), { windows: [{ kind: 'weekly', used: 0, resetsAt: now + WEEK }] }, now);
   assert.equal(store.get<{ body: string }>('SELECT body FROM notifications')!.body,
-    'codex / work / you@example.com\n🎁 Quota restored before the scheduled reset.\nWeek: 0% used; resets 2026-09-15 14:00');
+    'codex / work / you@example.com\n🎁 Quota restored before the scheduled reset.\nWeek: 100% left; resets 2026-09-15 14:00');
   store.close();
 });
 

@@ -9,6 +9,14 @@ export class Engine {
   private running = false;
   lastTick = Date.now();
   constructor(readonly store: Store, readonly vault: Vault, readonly providers: ProviderAdapter, readonly concurrency = 4) {}
+  async runIfIdle<T>(accountId: string, operation: () => Promise<T>): Promise<{ result: T } | null> {
+    if (this.busy.has(accountId) || this.busy.size >= this.concurrency) return null;
+    this.busy.add(accountId);
+    try {
+      // Wrap completed results so null/undefined cannot be mistaken for contention.
+      return { result: await operation() };
+    } finally { this.busy.delete(accountId); }
+  }
   private accountName(account: Pick<Account, 'id' | 'provider' | 'category' | 'credentials'>) {
     return `${account.provider} / ${account.category} / ${accountEmail(this.vault.open<Credentials>(account.credentials, account.id)) ?? 'email unavailable'}`;
   }
@@ -191,18 +199,16 @@ export class Engine {
     try {
       const accounts = this.store.all<Account>("SELECT * FROM accounts WHERE status='active' ORDER BY MIN(next_poll,COALESCE(next_session,next_poll))");
       for (let i = 0; i < accounts.length; i += this.concurrency) {
-        await Promise.all(accounts.slice(i, i + this.concurrency).map(async initial => {
-          if (this.busy.has(initial.id) || this.busy.size >= this.concurrency) return;
+        await Promise.all(accounts.slice(i, i + this.concurrency).map(initial => {
           const latest = this.store.get<Account>('SELECT * FROM accounts WHERE id=?', initial.id);
           if (!latest || latest.status !== 'active') return;
-          this.busy.add(initial.id);
-          try {
+          return this.runIfIdle(initial.id, async () => {
             if (latest.next_poll <= now) await this.poll(latest, now);
             const account = this.store.get<Account>('SELECT * FROM accounts WHERE id=?', initial.id);
             if (!account || account.status !== 'active') return;
             const job = this.store.get<Job>("SELECT * FROM jobs WHERE account_id=? AND due<=? ORDER BY CASE reason WHEN 'weekly_reset' THEN 0 WHEN 'manual' THEN 1 ELSE 2 END,id LIMIT 1", account.id, Date.now());
             if (job) await this.executeJob(account, job, Date.now());
-          } finally { this.busy.delete(initial.id); }
+          });
         }));
         this.lastTick = Date.now();
       }

@@ -98,9 +98,7 @@ export async function createApi(store: Store, vault: Vault, engine: Engine, botU
   app.post<{ Params: { id: string } }>('/v1/accounts/:id/usage', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async request => {
     const account = owned(authenticate(request.headers.authorization), request.params.id);
     if (account.status !== 'active') return { limits: [], refreshError: 'reauthentication required' };
-    if (engine.busy.has(account.id) || engine.busy.size >= engine.concurrency) return { limits: [], refreshError: 'account operation in progress; retry shortly' };
-    engine.busy.add(account.id);
-    try {
+    const operation = await engine.runIfIdle(account.id, async () => {
       const snapshot = await engine.poll(account, Date.now());
       const current = owned(authenticate(request.headers.authorization), account.id);
       return {
@@ -110,7 +108,8 @@ export async function createApi(store: Store, vault: Vault, engine: Engine, botU
         pending: store.all('SELECT reason,attempts,due FROM jobs WHERE account_id=?', account.id),
         refreshError: snapshot ? null : current.last_error ?? 'provider unavailable'
       };
-    } finally { engine.busy.delete(account.id); }
+    });
+    return operation ? operation.result : { limits: [], refreshError: 'account operation in progress; retry shortly' };
   });
   app.put<{ Params: { id: string } }>('/v1/accounts/:id', async request => {
     const account = owned(authenticate(request.headers.authorization), request.params.id);

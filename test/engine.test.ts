@@ -19,6 +19,36 @@ function fixture(provider?: ProviderAdapter, path = ':memory:') {
   const engine = new Engine(store, vault, provider ?? { execute: async () => ({ windows: [] }) });
   return { store, account, engine };
 }
+test('account operations reserve capacity synchronously and skip contention without running callbacks', async () => {
+  const { store, engine } = fixture();
+  let release = () => {};
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const pending = Array.from({ length: engine.concurrency }, (_, i) => engine.runIfIdle(`account-${i}`, async () => {
+    await gate;
+    return i;
+  }));
+  try {
+    assert.equal(engine.busy.size, engine.concurrency);
+    assert.equal(await engine.runIfIdle('account-0', async () => assert.fail('overlapping operation ran')), null);
+    assert.equal(await engine.runIfIdle('another-account', async () => assert.fail('capacity exceeded')), null);
+    release();
+    assert.deepEqual(await Promise.all(pending), Array.from({ length: engine.concurrency }, (_, i) => ({ result: i })));
+    assert.equal(engine.busy.size, 0);
+    assert.deepEqual(await engine.runIfIdle('account-0', async () => null), { result: null });
+    assert.deepEqual(await engine.runIfIdle('account-0', async () => undefined), { result: undefined });
+  } finally { release(); await Promise.all(pending); store.close(); }
+});
+test('account operations release their reservation after synchronous throws and rejected promises', async () => {
+  const { store, engine } = fixture();
+  const error = new Error('operation failed');
+  try {
+    for (const operation of [() => { throw error; }, async () => { throw error; }]) {
+      await assert.rejects(engine.runIfIdle('a', operation), candidate => candidate === error);
+      assert.equal(engine.busy.size, 0);
+      assert.deepEqual(await engine.runIfIdle('a', async () => 'retried'), { result: 'retried' });
+    }
+  } finally { store.close(); }
+});
 test('a window expiring at 10:00 reopens without waiting for the 11:00 slot in Rome', () => {
   const { store, account, engine } = fixture();
   try {

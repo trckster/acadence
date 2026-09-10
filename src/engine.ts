@@ -17,7 +17,7 @@ export class Engine {
     const existing = this.store.get<Job>('SELECT * FROM jobs WHERE account_id=?', account.id);
     if (existing?.dedupe === dedupe) return;
     if (existing) {
-      const priority: Record<string, number> = { weekly_reset: 0, manual: 1, expiry: 2, anchor: 3, scheduled: 3, five_reset: 4 };
+      const priority: Record<string, number> = { manual: 0, anchor: 1, weekly_reset: 2, expiry: 3, scheduled: 4, five_reset: 5 };
       const promote = priority[reason]! <= priority[existing.reason]!;
       this.store.run('UPDATE jobs SET reason=?,dedupe=?,due=MIN(due,?),account_version=?,schedule_version=?,expires=? WHERE id=?',
         promote ? reason : existing.reason, promote ? dedupe : existing.dedupe,
@@ -110,9 +110,10 @@ export class Engine {
   }
   async executeJob(account: Account, job: Job, now: number) {
     const user = this.store.get<User>('SELECT * FROM users WHERE id=?', account.user_id)!;
+    const schedule = this.store.schedule(user);
     const scheduled = ['anchor','scheduled','five_reset'].includes(job.reason);
     if (job.account_version !== account.version || (job.expires !== null && job.expires <= now) ||
-      (scheduled && (job.schedule_version !== user.schedule_version || job.reason !== 'anchor' && !canContinue(this.store.schedule(user), now) && (job.reason === 'five_reset' || job.attempts > 0)))) {
+      (scheduled && (job.schedule_version !== user.schedule_version || job.reason !== 'anchor' && !canContinue(schedule, now) && (job.reason === 'five_reset' || job.attempts > 0)))) {
       this.store.run('DELETE FROM jobs WHERE id=?', job.id);
       return;
     }
@@ -123,6 +124,13 @@ export class Engine {
         this.store.run('DELETE FROM jobs WHERE id=?', job.id);
         return;
       }
+    }
+    const next = nextAnchor(schedule, now);
+    const plannedOpening = now - job.due < 90_000 &&
+      (job.reason === 'anchor' && job.attempts === 0 || anchorsAround(schedule, job.due).includes(job.due));
+    if (job.reason !== 'manual' && !plannedOpening && next !== null && next - now <= FIVE) {
+      this.store.run('UPDATE jobs SET due=? WHERE id=?', next, job.id);
+      return;
     }
     try {
       await this.operate(account, 'open');

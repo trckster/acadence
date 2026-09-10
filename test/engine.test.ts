@@ -235,6 +235,41 @@ test('ordinary expiry queues one opening without a quota-restoration notificatio
   store.close();
 });
 
+test('exhausted weekly quota suppresses only five-hour reminders without consuming their dedupe', () => {
+  for (const resetOffset of [null, 12 * HOUR, WEEK]) {
+    const { store, account, engine } = fixture();
+    const now = Date.parse('2026-09-08T12:00:00Z');
+    engine.observe(account(), { windows: [
+      { kind: 'five_hour', used: 98, resetsAt: now + HOUR },
+      { kind: 'weekly', used: 100, resetsAt: resetOffset === null ? null : now + resetOffset }
+    ] }, now);
+    engine.reminders(now);
+    const reminders = store.all<{ body: string }>('SELECT body FROM notifications');
+    assert.equal(reminders.length, resetOffset === 12 * HOUR ? 1 : 0);
+    if (reminders.length) assert.match(reminders[0]!.body, /Week:/);
+    store.run("UPDATE windows SET used=99 WHERE kind='weekly'");
+    engine.reminders(now + 1000);
+    engine.reminders(now + 2000);
+    assert.equal(store.all("SELECT * FROM notifications WHERE dedupe LIKE 'reminder:a:five_hour:%'").length, 1);
+    store.close();
+  }
+});
+
+test('expired or absent weekly quota does not suppress five-hour reminders', () => {
+  for (const present of [0, 1]) {
+    const { store, account, engine } = fixture();
+    const now = Date.parse('2026-09-08T12:00:00Z');
+    engine.observe(account(), { windows: [
+      { kind: 'five_hour', used: 98, resetsAt: now + HOUR },
+      { kind: 'weekly', used: 100, resetsAt: present ? now : now + WEEK }
+    ] }, now);
+    store.run("UPDATE windows SET present=? WHERE kind='weekly'", present);
+    engine.reminders(now);
+    assert.equal(store.all("SELECT * FROM notifications WHERE dedupe LIKE 'reminder:a:five_hour:%'").length, 1);
+    store.close();
+  }
+});
+
 test('reminders survive timestamp drift and restart, and repeat for the next window', () => {
   const directory = mkdtempSync(join(tmpdir(), 'acadence-reminders-'));
   try {

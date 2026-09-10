@@ -174,6 +174,10 @@ export class Engine {
     const rows = this.store.all<WindowRow & { user_id: string; timezone: string }>(`SELECT w.*,a.user_id,u.timezone FROM windows w JOIN accounts a ON a.id=w.account_id JOIN users u ON u.id=a.user_id
       WHERE w.present=1 AND a.status='active' AND w.resets_at>?`, now);
     for (const window of rows) {
+      // A short-window reminder is not actionable while weekly quota is exhausted.
+      if (window.kind === 'five_hour' && this.store.get(`SELECT account_id FROM windows
+        WHERE account_id=? AND kind='weekly' AND present=1 AND used>=100
+        AND (resets_at IS NULL OR resets_at>?)`, window.account_id, now)) continue;
       const lead = window.kind === 'five_hour' ? HOUR : 24 * HOUR;
       if (window.resets_at! - now <= lead) {
         const dedupe = `reminder:${window.account_id}:${window.kind}:${window.generation}`;

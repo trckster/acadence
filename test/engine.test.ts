@@ -462,3 +462,32 @@ test('a deferred weekly-only opening survives restart and respects a later edite
     assert.equal(opens, 1);
   } finally { recovered?.close(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('restart promotes an overdue failed expiry to a fresh anchor before a nearby planned start', async t => {
+  const now = Date.parse('2026-09-10T06:00:03Z');
+  t.mock.timers.enable({ apis: ['Date'], now });
+  const directory = mkdtempSync(join(tmpdir(), 'acadence-anchor-restart-'));
+  let recovered: Store | undefined;
+  try {
+    const path = join(directory, 'test.sqlite');
+    const { store, account, engine } = fixture(undefined, path);
+    store.run("UPDATE users SET anchors='[\"06:00\",\"07:00\"]'");
+    const expired = Date.parse('2026-09-10T00:58:00Z');
+    engine.observe(account(), { windows: [{ kind: 'five_hour', used: 80, resetsAt: expired }] }, expired - HOUR);
+    engine.enqueue(account(), 'expiry', 'expiry:a', expired);
+    store.run('UPDATE jobs SET attempts=1,due=?', expired + 60_000);
+    store.run('UPDATE accounts SET next_session=?,next_poll=?', now - 3000, now + HOUR);
+    store.close();
+    recovered = new Store(path);
+    let opens = 0;
+    const worker = new Engine(recovered, vault, { execute: async () => { opens++; return null; } });
+    worker.plan(now);
+    const job = recovered.get<Job>('SELECT * FROM jobs')!;
+    assert.equal(job.reason, 'anchor');
+    assert.equal(job.due, now);
+    assert.equal(job.attempts, 0);
+    await worker.tick(now);
+    assert.equal(opens, 1);
+    assert.equal(recovered.all('SELECT * FROM jobs').length, 0);
+  } finally { recovered?.close(); rmSync(directory, { recursive: true, force: true }); }
+});

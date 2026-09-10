@@ -49,6 +49,12 @@ test('on-demand usage is scoped, fresh, locked against overlap, and hides stale 
     assert.equal((await f.app.inject({ method: 'POST', url })).statusCode, 401);
     assert.equal((await f.app.inject({ method: 'POST', url, headers: other })).statusCode, 404);
     assert.equal(calls, 0);
+    for (let i = 0; i < f.engine.concurrency; i++) f.engine.busy.add(`other-account-${i}`);
+    const full = await f.app.inject({ method: 'POST', url, headers });
+    assert.equal(full.statusCode, 200);
+    assert.deepEqual(full.json(), { limits: [], refreshError: 'account operation in progress; retry shortly' });
+    assert.equal(calls, 0);
+    f.engine.busy.clear();
     const pending = f.app.inject({ method: 'POST', url, headers });
     void pending.then(() => {});
     await entered;

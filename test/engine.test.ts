@@ -19,6 +19,36 @@ function fixture(provider?: ProviderAdapter, path = ':memory:') {
   const engine = new Engine(store, vault, provider ?? { execute: async () => ({ windows: [] }) });
   return { store, account, engine };
 }
+test('account operations reserve capacity synchronously and skip contention without running callbacks', async () => {
+  const { store, engine } = fixture();
+  let release = () => {};
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const pending = Array.from({ length: engine.concurrency }, (_, i) => engine.runIfIdle(`account-${i}`, async () => {
+    await gate;
+    return i;
+  }));
+  try {
+    assert.equal(engine.busy.size, engine.concurrency);
+    assert.equal(await engine.runIfIdle('account-0', async () => assert.fail('overlapping operation ran')), null);
+    assert.equal(await engine.runIfIdle('another-account', async () => assert.fail('capacity exceeded')), null);
+    release();
+    assert.deepEqual(await Promise.all(pending), Array.from({ length: engine.concurrency }, (_, i) => ({ result: i })));
+    assert.equal(engine.busy.size, 0);
+    assert.deepEqual(await engine.runIfIdle('account-0', async () => null), { result: null });
+    assert.deepEqual(await engine.runIfIdle('account-0', async () => undefined), { result: undefined });
+  } finally { release(); await Promise.all(pending); store.close(); }
+});
+test('account operations release their reservation after synchronous throws and rejected promises', async () => {
+  const { store, engine } = fixture();
+  const error = new Error('operation failed');
+  try {
+    for (const operation of [() => { throw error; }, async () => { throw error; }]) {
+      await assert.rejects(engine.runIfIdle('a', operation), candidate => candidate === error);
+      assert.equal(engine.busy.size, 0);
+      assert.deepEqual(await engine.runIfIdle('a', async () => 'retried'), { result: 'retried' });
+    }
+  } finally { store.close(); }
+});
 test('a window expiring at 10:00 reopens without waiting for the 11:00 slot in Rome', () => {
   const { store, account, engine } = fixture();
   try {
@@ -490,4 +520,59 @@ test('restart promotes an overdue failed expiry to a fresh anchor before a nearb
     assert.equal(opens, 1);
     assert.equal(recovered.all('SELECT * FROM jobs').length, 0);
   } finally { recovered?.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('usage polling retries transient failures with saved credentials and records one observation', async () => {
+  let calls = 0;
+  const rotated = { ...credentials, tokens: { ...credentials.tokens, access_token: 'rotated' } };
+  const { store, account, engine } = fixture({ execute: async (_provider, auth, action, save) => {
+    assert.equal(action, 'poll');
+    calls++;
+    if (calls === 1) { save(rotated); throw new ProviderError('unavailable'); }
+    assert.deepEqual(auth, rotated);
+    if (calls === 2) throw new ProviderError('unavailable');
+    return { windows: [] };
+  } });
+  try {
+    assert.deepEqual(await engine.runIfIdle('a', () => engine.poll(account(), Date.now())), { result: { windows: [] } });
+    assert.equal(calls, 3);
+    assert.equal(account().failures, 0);
+    assert.equal(store.all('SELECT * FROM observations').length, 1);
+    assert.equal(engine.busy.size, 0);
+  } finally { store.close(); }
+});
+
+test('usage retries stop after three attempts and count one failed poll', async () => {
+  let calls = 0;
+  const { store, account, engine } = fixture({ execute: async () => { calls++; throw new ProviderError('unavailable'); } });
+  try {
+    assert.equal(await engine.poll(account(), Date.now()), null);
+    assert.equal(calls, 3);
+    assert.equal(account().failures, 1);
+    assert.equal(store.all('SELECT * FROM observations').length, 0);
+  } finally { store.close(); }
+});
+
+for (const code of ['auth', 'rate_limit', 'quota_schema'] as const) {
+  test(`usage polling does not retry ${code} errors`, async () => {
+    let calls = 0;
+    const { store, account, engine } = fixture({ execute: async () => { calls++; throw new ProviderError(code); } });
+    try {
+      assert.equal(await engine.poll(account(), Date.now()), null);
+      assert.equal(calls, 1);
+      assert.equal(account().last_error, code);
+    } finally { store.close(); }
+  });
+}
+
+test('slow failed usage requests are not retried', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  let calls = 0;
+  const { store, account, engine } = fixture({ execute: async () => {
+    calls++; t.mock.timers.tick(5000); throw new ProviderError('unavailable');
+  } });
+  try {
+    assert.equal(await engine.poll(account(), Date.now()), null);
+    assert.equal(calls, 1);
+  } finally { store.close(); }
 });

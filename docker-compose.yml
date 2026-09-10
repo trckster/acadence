@@ -11,8 +11,6 @@ services:
       TRUST_PROXY_HOPS: 1
       DATABASE_PATH: /data/acadence.sqlite
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
-      CODEX_MODEL: ${CODEX_MODEL:-}
-      CLAUDE_MODEL: ${CLAUDE_MODEL:-}
     volumes:
       - acadence-data:/data
     tmpfs:

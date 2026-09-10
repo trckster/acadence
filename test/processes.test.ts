@@ -24,9 +24,7 @@ const codex = { auth_mode: 'chatgpt' as const, tokens: { access_token: 'test-acc
 test('Codex subprocess performs RPC initialization, waits for completion and saves rotated credentials', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'acadence-protocol-test-'));
   const previousPath = process.env.PATH;
-  const previousModel = process.env.CODEX_MODEL;
   try {
-    delete process.env.CODEX_MODEL;
     await writeFile(join(dir, 'codex'), `#!/usr/bin/env node
 const fs = require('node:fs');
 const readline = require('node:readline');
@@ -63,8 +61,6 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     assert.equal(saved.length, 2);
   } finally {
     process.env.PATH = previousPath;
-    if (previousModel === undefined) delete process.env.CODEX_MODEL;
-    else process.env.CODEX_MODEL = previousModel;
     await rm(dir, { recursive: true, force: true });
   }
 });

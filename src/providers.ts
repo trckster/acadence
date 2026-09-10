@@ -203,7 +203,7 @@ class CodexRpc {
     const { thread } = await this.call('thread/start', {
       cwd, approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true,
       baseInstructions: 'Reply with hello only. Do not use tools.',
-      model: process.env.CODEX_MODEL || 'gpt-5.6-luna'
+      model: 'gpt-5.6-luna'
     });
     const { turn } = await this.call('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'Hello. Reply with hello only.', text_elements: [] }] });
     const deadline = Date.now() + 90_000;
@@ -265,7 +265,7 @@ export class Providers implements ProviderAdapter {
       };
       if (data.claudeAiOauth.expiresAt < Date.now() + 120_000) await refresh();
       if (action === 'open') {
-        const output = await runProcess('claude', ['-p', 'Hello. Reply with hello only.', '--output-format', 'json', '--tools', '', '--strict-mcp-config', '--setting-sources', '', '--no-session-persistence', '--max-turns', '1', ...(process.env.CLAUDE_MODEL ? ['--model', process.env.CLAUDE_MODEL] : [])], cleanEnvironment(home), cwd);
+        const output = await runProcess('claude', ['-p', 'Hello. Reply with hello only.', '--output-format', 'json', '--tools', '', '--strict-mcp-config', '--setting-sources', '', '--no-session-persistence', '--max-turns', '1'], cleanEnvironment(home), cwd);
         const result = JSON.parse(output);
         if (result.is_error || result.type !== 'result' || result.subtype !== 'success') throw new ProviderError('unavailable');
         return null;

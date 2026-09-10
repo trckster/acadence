@@ -38,7 +38,7 @@ test('a window expiring at 10:00 reopens without waiting for the 11:00 slot in R
     assert.equal(store.all<Job>('SELECT * FROM jobs')[0]!.reason, 'expiry');
   } finally { store.close(); }
 });
-test('weekly resets notify and open immediately even with an anchor nearby', () => {
+test('weekly restoration notifies and queues one opening even with an anchor nearby', () => {
   const { store, account, engine } = fixture();
   const now = Date.parse('2026-09-08T12:00:00Z');
   engine.observe(account(), { windows: [{ kind: 'five_hour', used: 70, resetsAt: now + HOUR }, { kind: 'weekly', used: 80, resetsAt: now + HOUR }] }, now - HOUR);
@@ -146,7 +146,7 @@ test('schedule edits and credential replacement invalidate older queued work', a
   assert.equal(store.all('SELECT * FROM jobs').length, 0);
   store.close();
 });
-test('different opening reasons share one retry operation and weekly resets take priority', () => {
+test('different opening reasons share one retry operation and manual triggers take priority', () => {
   const { store, account, engine } = fixture();
   const now = Date.now();
   engine.enqueue(account(), 'scheduled', 'anchor:a', now, now + FIVE);
@@ -155,12 +155,12 @@ test('different opening reasons share one retry operation and weekly resets take
   engine.enqueue(account(), 'weekly_reset', 'weekly:a', now + 2000);
   const jobs = store.all<Job>('SELECT * FROM jobs');
   assert.equal(jobs.length, 1);
-  assert.equal(jobs[0]!.reason, 'weekly_reset');
+  assert.equal(jobs[0]!.reason, 'manual');
   assert.equal(jobs[0]!.expires, null);
   assert.equal(jobs[0]!.attempts, 2);
   store.close();
 });
-test('failed anchors keep retrying near another anchor until their operation expires', async () => {
+test('failed anchors pause retries before another anchor until their operation expires', async () => {
   let calls = 0;
   const { store, account, engine } = fixture({ execute: async () => { calls++; throw new ProviderError('unavailable'); } });
   store.run('UPDATE users SET anchors=?', '["06:00","07:00"]');
@@ -168,9 +168,9 @@ test('failed anchors keep retrying near another anchor until their operation exp
   engine.enqueue(account(), 'anchor', 'anchor:a', now, now + HOUR);
   await engine.executeJob(account(), store.all<Job>('SELECT * FROM jobs')[0]!, now);
   await engine.executeJob(account(), store.all<Job>('SELECT * FROM jobs')[0]!, now + 60_000);
-  assert.equal(calls, 2);
+  assert.equal(calls, 1);
   await engine.executeJob(account(), store.all<Job>('SELECT * FROM jobs')[0]!, now + HOUR);
-  assert.equal(calls, 2);
+  assert.equal(calls, 1);
   assert.equal(store.all('SELECT * FROM jobs').length, 0);
   store.close();
 });
@@ -291,8 +291,9 @@ test('expiry opens on the next tick, survives restart, and does not repeat on st
   } finally { store?.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('expiry retries retain backoff across ticks and ignore nearby anchors', async t => {
-  const now = Date.parse('2026-09-09T12:59:55Z');
+test('expiry retries wait for the anchor when their backoff enters the five-hour pause', async t => {
+  const now = Date.parse('2026-09-09T00:59:55Z');
+  const anchor = Date.parse('2026-09-09T06:00:00Z');
   t.mock.timers.enable({ apis: ['Date'], now });
   let attempts = 0;
   const { store, account, engine } = fixture({ execute: async () => {
@@ -301,16 +302,20 @@ test('expiry retries retain backoff across ticks and ignore nearby anchors', asy
     return null;
   } });
   try {
+    store.run('UPDATE users SET anchors=?', '["06:00"]');
     engine.observe(account(), { windows: [{ kind: 'five_hour', used: 99, resetsAt: now }] }, now - HOUR);
-    store.run('UPDATE accounts SET next_poll=?', now + HOUR);
+    store.run('UPDATE accounts SET next_poll=?', anchor + HOUR);
     await engine.tick(now);
     assert.equal(attempts, 1);
     t.mock.timers.tick(5000);
-    await engine.tick(now + 5000);
-    assert.equal(attempts, 1);
+    await engine.tick(Date.now());
     assert.equal(store.get<Job>('SELECT * FROM jobs')!.due, now + 60_000);
     t.mock.timers.tick(55_000);
-    await engine.tick(now + 60_000);
+    await engine.tick(Date.now());
+    assert.equal(attempts, 1);
+    assert.equal(store.get<Job>('SELECT * FROM jobs')!.due, anchor);
+    t.mock.timers.tick(anchor - Date.now());
+    await engine.tick(Date.now());
     assert.equal(attempts, 2);
     assert.equal(store.all('SELECT * FROM jobs').length, 0);
   } finally { store.close(); }
@@ -386,4 +391,103 @@ test('expiry during a usage poll queues an opening before the idle response clea
     assert.deepEqual(actions, ['poll', 'open']);
     assert.equal(store.all('SELECT * FROM jobs').length, 0);
   } finally { store.close(); }
+});
+
+for (const provider of ['claude', 'codex'] as const) {
+  test(`${provider} expiry at exactly five hours before the anchor waits until the planned opening`, async t => {
+    const now = Date.parse('2026-09-10T01:00:00+02:00');
+    const anchor = now + FIVE;
+    t.mock.timers.enable({ apis: ['Date'], now });
+    let opens = 0;
+    const { store, account, engine } = fixture({ execute: async () => { opens++; return null; } });
+    try {
+      store.run("UPDATE users SET timezone='Europe/Rome',anchors='[\"06:00\",\"07:00\"]'");
+      store.run('UPDATE accounts SET provider=?,next_poll=?', provider, anchor + HOUR);
+      engine.observe(account(), { windows: [{ kind: 'five_hour', used: 0, resetsAt: now }] }, now - HOUR);
+      await engine.tick(now);
+      assert.equal(opens, 0);
+      assert.equal(store.get<Job>('SELECT * FROM jobs')!.due, anchor);
+      t.mock.timers.tick(FIVE - 1);
+      await engine.tick(Date.now());
+      assert.equal(opens, 0);
+      t.mock.timers.tick(1);
+      await engine.tick(Date.now());
+      assert.equal(opens, 1);
+      assert.equal(store.all('SELECT * FROM jobs').length, 0);
+    } finally { store.close(); }
+  });
+}
+
+test('weekly restoration waits for the planned time, while manual triggers remain immediate', async t => {
+  const now = Date.parse('2026-09-10T02:00:00Z');
+  t.mock.timers.enable({ apis: ['Date'], now });
+  let opens = 0;
+  const { store, account, engine } = fixture({ execute: async () => { opens++; return null; } });
+  try {
+    engine.observe(account(), { windows: [{ kind: 'weekly', used: 80, resetsAt: now + WEEK }] }, now - HOUR);
+    engine.observe(account(), { windows: [{ kind: 'weekly', used: 0, resetsAt: now + WEEK }] }, now);
+    await engine.executeJob(account(), store.get<Job>('SELECT * FROM jobs')!, now);
+    assert.equal(opens, 0);
+    assert.equal(store.get<Job>('SELECT * FROM jobs')!.due, Date.parse('2026-09-10T06:00:00Z'));
+    engine.enqueue(account(), 'manual', 'manual:a', now);
+    engine.enqueue(account(), 'weekly_reset', 'another-reset:a', now);
+    await engine.executeJob(account(), store.get<Job>('SELECT * FROM jobs')!, now);
+    assert.equal(opens, 1);
+  } finally { store.close(); }
+});
+
+test('a deferred weekly-only opening survives restart and respects a later edited anchor', async t => {
+  const now = Date.parse('2026-09-10T02:00:00Z');
+  t.mock.timers.enable({ apis: ['Date'], now });
+  const directory = mkdtempSync(join(tmpdir(), 'acadence-pause-'));
+  let recovered: Store | undefined;
+  try {
+    const path = join(directory, 'test.sqlite');
+    const { store, account, engine } = fixture(undefined, path);
+    engine.observe(account(), { windows: [{ kind: 'weekly', used: 80, resetsAt: now }] }, now - HOUR);
+    engine.plan(now);
+    await engine.executeJob(account(), store.get<Job>('SELECT * FROM jobs')!, now);
+    store.close();
+    recovered = new Store(path);
+    recovered.run("UPDATE users SET anchors='[\"07:00\"]',schedule_version=schedule_version+1");
+    recovered.run('UPDATE accounts SET next_poll=?', now + 10 * HOUR);
+    let opens = 0;
+    const worker = new Engine(recovered, vault, { execute: async () => { opens++; return null; } });
+    t.mock.timers.tick(4 * HOUR);
+    await worker.tick(Date.now());
+    assert.equal(opens, 0);
+    assert.equal(recovered.get<Job>('SELECT * FROM jobs')!.due, now + 5 * HOUR);
+    t.mock.timers.tick(HOUR);
+    await worker.tick(Date.now());
+    assert.equal(opens, 1);
+  } finally { recovered?.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('restart promotes an overdue failed expiry to a fresh anchor before a nearby planned start', async t => {
+  const now = Date.parse('2026-09-10T06:00:03Z');
+  t.mock.timers.enable({ apis: ['Date'], now });
+  const directory = mkdtempSync(join(tmpdir(), 'acadence-anchor-restart-'));
+  let recovered: Store | undefined;
+  try {
+    const path = join(directory, 'test.sqlite');
+    const { store, account, engine } = fixture(undefined, path);
+    store.run("UPDATE users SET anchors='[\"06:00\",\"07:00\"]'");
+    const expired = Date.parse('2026-09-10T00:58:00Z');
+    engine.observe(account(), { windows: [{ kind: 'five_hour', used: 80, resetsAt: expired }] }, expired - HOUR);
+    engine.enqueue(account(), 'expiry', 'expiry:a', expired);
+    store.run('UPDATE jobs SET attempts=1,due=?', expired + 60_000);
+    store.run('UPDATE accounts SET next_session=?,next_poll=?', now - 3000, now + HOUR);
+    store.close();
+    recovered = new Store(path);
+    let opens = 0;
+    const worker = new Engine(recovered, vault, { execute: async () => { opens++; return null; } });
+    worker.plan(now);
+    const job = recovered.get<Job>('SELECT * FROM jobs')!;
+    assert.equal(job.reason, 'anchor');
+    assert.equal(job.due, now);
+    assert.equal(job.attempts, 0);
+    await worker.tick(now);
+    assert.equal(opens, 1);
+    assert.equal(recovered.all('SELECT * FROM jobs').length, 0);
+  } finally { recovered?.close(); rmSync(directory, { recursive: true, force: true }); }
 });

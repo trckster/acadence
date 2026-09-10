@@ -108,7 +108,7 @@ export class Engine {
   async poll(account: Account, now: number) {
     this.store.run('UPDATE accounts SET next_poll=? WHERE id=?', now + HOUR, account.id);
     try {
-      const snapshot = await this.operate(account, 'poll');
+      const snapshot = await this.pollWithRetry(account);
       if (snapshot) this.observe(account, snapshot, Date.now());
       return snapshot;
     } catch (error) {
@@ -116,6 +116,23 @@ export class Engine {
       this.store.run('UPDATE accounts SET failures=? WHERE id=?', failures, account.id);
       this.failure(account, error, failures, now);
       return null;
+    }
+  }
+  private async pollWithRetry(account: Account) {
+    const started = Date.now();
+    for (let attempt = 0; ; attempt++) {
+      try { return await this.operate(account, 'poll'); }
+      catch (error) {
+        // Retry fast transient failures, not slow timeouts that already risk
+        // exceeding the reverse proxy's request deadline.
+        if (!(error instanceof ProviderError) || error.code !== 'unavailable' ||
+            attempt >= 2 || Date.now() - started >= 5000) throw error;
+        await new Promise(resolve => setTimeout(resolve, (attempt + 1) * 250));
+        const current = this.store.get<Account>('SELECT * FROM accounts WHERE id=?', account.id);
+        if (!current || current.version !== account.version || current.status !== 'active') throw error;
+        // A failed provider operation can still rotate and persist credentials.
+        account = current;
+      }
     }
   }
   async executeJob(account: Account, job: Job, now: number) {

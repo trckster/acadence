@@ -41,7 +41,7 @@ test('help commands work at every level and removed commands and flags are rejec
   }
 });
 
-test('see fetches owned accounts and never displays stale windows', async () => {
+test('see fetches owned accounts and labels saved usage only when refresh fails', async () => {
   const home = await mkdtemp(join(tmpdir(), 'acadence-usage-test-'));
   const store = new Store(':memory:');
   const vault = new Vault(Buffer.alloc(32, 4).toString('base64'));
@@ -102,6 +102,17 @@ test('see fetches owned accounts and never displays stale windows', async () => 
     assert.equal(providerCalls, 2);
     assert.equal(await cli('see'), output);
     assert.equal(providerCalls, 4);
+    engine.busy.add('personal');
+    const busyOutput = await cli();
+    assert.match(busyOutput, /Usage unavailable: account operation in progress/);
+    assert.match(busyOutput, /Week: 45% used; resets not active \(last known; checked \d{4}-/);
+    assert.doesNotMatch(busyOutput, /100%|88%|99%/);
+    engine.busy.clear();
+    const execute = engine.providers.execute;
+    engine.providers.execute = async () => { throw new Error('offline'); };
+    assert.match(await cli(), /Week: 45% used; resets not active \(last known; checked /);
+    engine.providers.execute = execute;
+
     store.run('UPDATE accounts SET credentials=? WHERE id=?', vault.seal({ tokens: { id_token: `header.${Buffer.from(JSON.stringify({ email: 'work@example.com' })).toString('base64url')}.signature` } }, 'new'), 'new');
     for (const action of ['disconnect', 'reauth']) {
       await assert.rejects(cli(action, 'new'), /too many arguments/);

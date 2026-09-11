@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { anchorSchema, timezoneSchema, type Provider, type Schedule } from './domain.js';
 import { accountCategory, accountEmail, claudeAccountEmail, cleanEnvironment, parseCredentials, runProcess } from './providers.js';
-import { formatUsage } from './format.js';
+import { formatTimestamp, formatUsage } from './format.js';
 import { select } from './select.js';
 import { withSpinner } from './spinner.js';
 import { fetchWithContext, responseJson, requestTarget, RequestError, formatError, providerErrorMessage } from './errors.js';
@@ -144,11 +144,16 @@ async function showAccounts() {
     const rows = await request('/v1/accounts');
     for (let i = 0; i < rows.length; i += 4) {
       await Promise.all(rows.slice(i, i + 4).map(async (row: any) => {
+        const savedLimits = row.limits ?? [];
         row.limits = [];
         try {
           Object.assign(row, await request(`/v1/accounts/${encodeURIComponent(row.id)}/usage`, 'POST', {}, undefined, 120_000));
         } catch (error) {
           row.refreshError = formatError(error);
+        }
+        if (row.refreshError && row.status === 'active' && row.refreshError !== 'auth') {
+          row.limits = savedLimits;
+          row.stale = true;
         }
       }));
     }
@@ -164,7 +169,7 @@ async function showAccounts() {
     for (const [kind, label] of [['five_hour', '5h'], ['weekly', 'Week']]) {
       const limit = row.limits.find((item: any) => item.kind === kind);
       console.log(limit
-        ? `    ${formatUsage(limit, now)}`
+        ? `    ${formatUsage(limit, now)}${row.stale ? ` (last known; checked ${formatTimestamp(limit.sampledAt)})` : ''}`
         : `    ${label}: usage unavailable`);
     }
     if (row.pending.length) console.log(`    ${row.pending.length} pending operation(s)`);

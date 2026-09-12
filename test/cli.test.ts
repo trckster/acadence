@@ -228,11 +228,12 @@ fs.writeFileSync(process.env.CODEX_HOME + '/auth.json', JSON.stringify({auth_mod
 test('CLI request errors show destination, status and cause, including usage refresh failures', async () => {
   const { createServer } = await import('node:http');
   const home = await mkdtemp(join(tmpdir(), 'acadence-errors-test-'));
+  let savedLimits: object[] | undefined;
   let status = 502;
   let body = '<html>upstream-private-detail</html>';
   const server = createServer((request, response) => {
     if (request.url === '/v1/accounts') {
-      response.end(JSON.stringify([{ id: 'test', provider: 'claude', category: 'personal', status: 'active', pending: [] }]));
+      response.end(JSON.stringify([{ id: 'test', provider: 'claude', category: 'personal', status: 'active', pending: [], limits: savedLimits }]));
     } else { response.writeHead(status); response.end(body); }
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -258,6 +259,13 @@ test('CLI request errors show destination, status and cause, including usage ref
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'client.json'), JSON.stringify({ url, token: 'a'.repeat(43) }));
     assert.match(await runCli(['see'], env), /Usage unavailable: POST http:\/\/127\.0\.0\.1:\d+\/v1\/accounts\/test\/usage: HTTP 503/);
+    savedLimits = [{ kind: 'weekly', used: 100, resetsAt: null, sampledAt: Date.now() }];
+    status = 200;
+    body = JSON.stringify({ limits: [], refreshError: 'reauthentication required' });
+    const expired = await runCli(['see'], env);
+    assert.match(expired, /Usage unavailable: reauthentication required/);
+    assert.match(expired, /Week: usage unavailable/);
+    assert.doesNotMatch(expired, /last known|100%/);
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     await assert.rejects(runCli(['login', '--api', url], env), /POST http:\/\/127\.0\.0\.1:\d+\/v1\/auth\/device: connection refused \(ECONNREFUSED\)/);
   } finally {

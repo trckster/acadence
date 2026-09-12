@@ -151,7 +151,7 @@ async function showAccounts() {
         } catch (error) {
           row.refreshError = formatError(error);
         }
-        if (row.refreshError && row.status === 'active' && row.refreshError !== 'auth') {
+        if (row.refreshError && row.status === 'active' && !['auth', 'reauthentication required'].includes(row.refreshError)) {
           row.limits = savedLimits;
           row.stale = true;
         }

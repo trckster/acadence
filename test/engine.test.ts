@@ -626,3 +626,36 @@ test('slow failed usage requests are not retried', async t => {
     assert.equal(calls, 1);
   } finally { store.close(); }
 });
+
+
+test('exhausted windows defer openings without failures and resume after reset or restoration', async () => {
+  for (const kind of ['weekly', 'five_hour'] as const) {
+    for (const resetOffset of [null, HOUR / 2, WEEK]) {
+      let opens = 0;
+      const { store, account, engine } = fixture({ execute: async () => { opens++; return null; } });
+      try {
+        const now = Date.now();
+        const resetsAt = resetOffset === null ? null : now + resetOffset;
+        engine.observe(account(), { windows: [{ kind, used: 100, resetsAt }] }, now);
+        engine.enqueue(account(), 'manual', 'manual:a', now);
+        await engine.executeJob(account(), store.get<Job>('SELECT * FROM jobs')!, now);
+        const deferred = store.get<Job>('SELECT * FROM jobs')!;
+        assert.equal(opens, 0);
+        assert.equal(deferred.attempts, 0);
+        assert.equal(deferred.due, now + Math.min(HOUR, resetOffset ?? HOUR));
+        assert.equal(store.all('SELECT * FROM notifications').length, 0);
+        // A successful poll can discover quota restored before its deadline.
+        engine.observe(account(), { windows: [{ kind, used: 20, resetsAt }] }, now + 1);
+        engine.enqueue(account(), 'manual', 'manual:restored', now + 1);
+        await engine.executeJob(account(), store.get<Job>('SELECT * FROM jobs')!, now + 1);
+        assert.equal(opens, 1);
+        assert.equal(store.all('SELECT * FROM jobs').length, 0);
+        // A persisted exhausted sample must not block an elapsed reset.
+        engine.observe(account(), { windows: [{ kind, used: 100, resetsAt: now + 2 }] }, now + 1);
+        engine.enqueue(account(), 'manual', 'manual:reset', now + 2);
+        await engine.executeJob(account(), store.get<Job>('SELECT * FROM jobs')!, now + 2);
+        assert.equal(opens, 2);
+      } finally { store.close(); }
+    }
+  }
+});

@@ -157,6 +157,16 @@ export class Engine {
         return;
       }
     }
+    // Keep hourly polling active so early quota restoration is still detected.
+    // Do not spend a provider operation on a known exhausted window.
+    const exhausted = this.store.all<WindowRow>(`SELECT * FROM windows
+      WHERE account_id=? AND present=1 AND used>=100
+      AND (resets_at IS NULL OR resets_at>?)`, account.id, now);
+    if (exhausted.length) {
+      const due = Math.min(now + HOUR, ...exhausted.map(window => window.resets_at ?? Infinity));
+      this.store.run('UPDATE jobs SET due=? WHERE id=?', due, job.id);
+      return;
+    }
     const next = nextAnchor(schedule, now);
     const plannedOpening = now - job.due < 90_000 &&
       (job.reason === 'anchor' && job.attempts === 0 || anchorsAround(schedule, job.due).includes(job.due));

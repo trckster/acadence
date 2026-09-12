@@ -41,7 +41,7 @@ test('help commands work at every level and removed commands and flags are rejec
   }
 });
 
-test('see fetches owned accounts and never displays stale windows', async () => {
+test('see fetches owned accounts and labels saved usage only when refresh fails', async () => {
   const home = await mkdtemp(join(tmpdir(), 'acadence-usage-test-'));
   const store = new Store(':memory:');
   const vault = new Vault(Buffer.alloc(32, 4).toString('base64'));
@@ -102,6 +102,17 @@ test('see fetches owned accounts and never displays stale windows', async () => 
     assert.equal(providerCalls, 2);
     assert.equal(await cli('see'), output);
     assert.equal(providerCalls, 4);
+    engine.busy.add('personal');
+    const busyOutput = await cli();
+    assert.match(busyOutput, /Usage unavailable: account operation in progress/);
+    assert.match(busyOutput, /Week: 45% used; resets not active \(last known; checked \d{4}-/);
+    assert.doesNotMatch(busyOutput, /100%|88%|99%/);
+    engine.busy.clear();
+    const execute = engine.providers.execute;
+    engine.providers.execute = async () => { throw new Error('offline'); };
+    assert.match(await cli(), /Week: 45% used; resets not active \(last known; checked /);
+    engine.providers.execute = execute;
+
     store.run('UPDATE accounts SET credentials=? WHERE id=?', vault.seal({ tokens: { id_token: `header.${Buffer.from(JSON.stringify({ email: 'work@example.com' })).toString('base64url')}.signature` } }, 'new'), 'new');
     for (const action of ['disconnect', 'reauth']) {
       await assert.rejects(cli(action, 'new'), /too many arguments/);
@@ -217,11 +228,12 @@ fs.writeFileSync(process.env.CODEX_HOME + '/auth.json', JSON.stringify({auth_mod
 test('CLI request errors show destination, status and cause, including usage refresh failures', async () => {
   const { createServer } = await import('node:http');
   const home = await mkdtemp(join(tmpdir(), 'acadence-errors-test-'));
+  let savedLimits: object[] | undefined;
   let status = 502;
   let body = '<html>upstream-private-detail</html>';
   const server = createServer((request, response) => {
     if (request.url === '/v1/accounts') {
-      response.end(JSON.stringify([{ id: 'test', provider: 'claude', category: 'personal', status: 'active', pending: [] }]));
+      response.end(JSON.stringify([{ id: 'test', provider: 'claude', category: 'personal', status: 'active', pending: [], limits: savedLimits }]));
     } else { response.writeHead(status); response.end(body); }
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -247,6 +259,13 @@ test('CLI request errors show destination, status and cause, including usage ref
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'client.json'), JSON.stringify({ url, token: 'a'.repeat(43) }));
     assert.match(await runCli(['see'], env), /Usage unavailable: POST http:\/\/127\.0\.0\.1:\d+\/v1\/accounts\/test\/usage: HTTP 503/);
+    savedLimits = [{ kind: 'weekly', used: 100, resetsAt: null, sampledAt: Date.now() }];
+    status = 200;
+    body = JSON.stringify({ limits: [], refreshError: 'reauthentication required' });
+    const expired = await runCli(['see'], env);
+    assert.match(expired, /Usage unavailable: reauthentication required/);
+    assert.match(expired, /Week: usage unavailable/);
+    assert.doesNotMatch(expired, /last known|100%/);
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     await assert.rejects(runCli(['login', '--api', url], env), /POST http:\/\/127\.0\.0\.1:\d+\/v1\/auth\/device: connection refused \(ECONNREFUSED\)/);
   } finally {

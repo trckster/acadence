@@ -216,3 +216,33 @@ test('legacy duplicate identities can reauthenticate without allowing new duplic
       payload: { credentials } })).statusCode, 409);
   } finally { await f.close(); }
 });
+
+for (const action of ['reauth', 'connect']) {
+  test(`${action} resumes a paused account, while usage and triggers leave it paused`, async () => {
+    const f = await fixture();
+    try {
+      const headers = await f.login(1);
+      const payload = { provider: 'codex', category: 'personal', credentials };
+      const id = (await f.app.inject({ method: 'POST', url: '/v1/accounts', headers, payload })).json().id;
+      let calls = 0;
+      f.engine.providers.execute = async () => { calls++; throw new ProviderError('quota_schema'); };
+      await f.app.inject({ method: 'POST', url: `/v1/accounts/${id}/usage`, headers });
+      await f.app.inject({ method: 'POST', url: `/v1/accounts/${id}/usage`, headers });
+      assert.equal((await f.app.inject({ method: 'POST', url: '/v1/trigger', headers })).json().queued, 0);
+      assert.equal(calls, 1);
+      const resumed = await f.app.inject(action === 'reauth'
+        ? { method: 'PUT', url: `/v1/accounts/${id}`, headers, payload: { credentials } }
+        : { method: 'POST', url: '/v1/accounts', headers, payload });
+      assert.equal(resumed.statusCode, 200);
+      const accounts = (await f.app.inject({ url: '/v1/accounts', headers })).json();
+      assert.equal(accounts.length, 1);
+      assert.equal(accounts[0].id, id);
+      assert.equal(accounts[0].status, 'active');
+      assert.equal(accounts[0].lastError, null);
+      f.engine.providers.execute = async () => { calls++; return { windows: [{ kind: 'weekly', used: 10, resetsAt: null }] }; };
+      await f.engine.tick();
+      assert.equal(calls, 2);
+      assert.equal((await f.app.inject({ method: 'POST', url: '/v1/accounts', headers, payload })).statusCode, 409);
+    } finally { await f.close(); }
+  });
+}

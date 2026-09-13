@@ -70,6 +70,14 @@ export async function createApi(store: Store, vault: Vault, engine: Engine, botU
     });
     return schedule;
   });
+  function resume(account: Account, credentials: Credentials) {
+    store.transaction(() => {
+      store.run("UPDATE accounts SET credentials=?,version=version+1,status='active',failures=0,last_error=NULL,next_poll=0,next_session=NULL,last_success=NULL WHERE id=?", vault.seal(credentials, account.id), account.id);
+      store.run('DELETE FROM jobs WHERE account_id=?', account.id);
+      store.run('UPDATE windows SET present=0 WHERE account_id=?', account.id);
+      store.run('DELETE FROM notifications WHERE account_id=? AND sent IS NULL', account.id);
+    });
+  }
   app.get('/v1/accounts', async request => {
     const user = authenticate(request.headers.authorization);
     return store.all<Account>('SELECT * FROM accounts WHERE user_id=? ORDER BY provider,category,id', user.id).map(account => ({
@@ -83,21 +91,28 @@ export async function createApi(store: Store, vault: Vault, engine: Engine, botU
   app.post('/v1/accounts', async request => {
     const user = authenticate(request.headers.authorization);
     const body = z.object({ provider: z.enum(['claude','codex']), category: z.enum(['personal','work']), credentials: z.unknown() }).parse(request.body);
-    if (store.get<{ count: number }>('SELECT COUNT(*) AS count FROM accounts WHERE user_id=?', user.id)!.count >= 20) return fail(409, 'Maximum 20 accounts per user');
     const credentials = parseCredentials(body.provider, body.credentials);
     const email = accountEmail(credentials);
     if (!email) return fail(400, 'Could not determine account email; sign in again');
     const existing = store.all<Account>('SELECT * FROM accounts WHERE user_id=? AND provider=? AND category=?', user.id, body.provider, body.category);
-    if (existing.some(account => accountEmail(vault.open<Credentials>(account.credentials, account.id))?.toLowerCase() === email.toLowerCase())) {
+    const matching = existing.find(account => accountEmail(vault.open<Credentials>(account.credentials, account.id))?.toLowerCase() === email.toLowerCase());
+    if (matching && matching.status !== 'active') {
+      idle(matching);
+      resume(matching, credentials);
+      return { id: matching.id, status: 'active', message: 'Reconnected; monitoring resumed' };
+    }
+    if (matching) {
       return fail(409, 'This service, account type and email are already connected; run acadence reauth');
     }
+    if (store.get<{ count: number }>('SELECT COUNT(*) AS count FROM accounts WHERE user_id=?', user.id)!.count >= 20) return fail(409, 'Maximum 20 accounts per user');
     const id = randomUUID();
     store.run('INSERT INTO accounts(id,user_id,provider,category,credentials) VALUES(?,?,?,?,?)', id, user.id, body.provider, body.category, vault.seal(credentials, id));
     return { id, status: 'active', message: 'Connected; limits will appear after the first check' };
   });
   app.post<{ Params: { id: string } }>('/v1/accounts/:id/usage', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async request => {
     const account = owned(authenticate(request.headers.authorization), request.params.id);
-    if (account.status !== 'active') return { limits: [], refreshError: 'reauthentication required' };
+    if (account.status !== 'active') return { limits: [], refreshError: account.status === 'monitoring_paused'
+      ? 'monitoring paused; run acadence reauth or connect again' : 'reauthentication required' };
     const operation = await engine.runIfIdle(account.id, async () => {
       const snapshot = await engine.poll(account, Date.now());
       const current = owned(authenticate(request.headers.authorization), account.id);
@@ -123,10 +138,7 @@ export async function createApi(store: Store, vault: Vault, engine: Engine, botU
       const existing = store.all<Account>('SELECT * FROM accounts WHERE user_id=? AND provider=? AND category=? AND id<>?', account.user_id, account.provider, account.category, account.id);
       if (existing.some(other => accountEmail(vault.open<Credentials>(other.credentials, other.id))?.toLowerCase() === email.toLowerCase())) return fail(409, 'This service, account type and email are already connected');
     }
-    store.transaction(() => {
-      store.run("UPDATE accounts SET credentials=?,version=version+1,status='active',failures=0,last_error=NULL,next_poll=0 WHERE id=?", vault.seal(credentials, account.id), account.id);
-      store.run('DELETE FROM jobs WHERE account_id=?', account.id);
-    });
+    resume(account, credentials);
     return { ok: true };
   });
   app.delete<{ Params: { id: string } }>('/v1/accounts/:id', async request => {

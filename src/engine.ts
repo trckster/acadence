@@ -100,16 +100,23 @@ export class Engine {
   failure(account: Account, error: unknown, attempts: number, now: number) {
     const code = error instanceof ProviderError ? error.code : 'unavailable';
     this.store.run('UPDATE accounts SET last_error=? WHERE id=?', code, account.id);
-    if (code === 'auth') {
-      this.store.run("UPDATE accounts SET status='reauth_required' WHERE id=?", account.id);
-      this.store.run('DELETE FROM jobs WHERE account_id=?', account.id);
-      this.store.notify(account.user_id, account.id, `auth:${account.id}:${account.version}`, `⚠️ ${this.accountName(account)}\nAuthentication expired or was rejected. Run acadence reauth.`, now);
-    } else if (attempts >= 3 || code === 'quota_schema') {
-      if (code === 'quota_schema') this.store.run("DELETE FROM jobs WHERE account_id=? AND reason IN ('anchor','scheduled','five_reset','expiry')", account.id);
+    if (code === 'auth' || code === 'quota_schema') {
+      this.store.transaction(() => {
+        this.store.run('UPDATE accounts SET status=?,next_session=NULL WHERE id=?',
+          code === 'auth' ? 'reauth_required' : 'monitoring_paused', account.id);
+        this.store.run('DELETE FROM jobs WHERE account_id=?', account.id);
+        this.store.run('UPDATE windows SET present=0 WHERE account_id=?', account.id);
+        this.store.run('DELETE FROM notifications WHERE account_id=? AND sent IS NULL', account.id);
+        const reason = code === 'auth' ? 'Authentication expired or was rejected.' : 'Subscription quota is unavailable or unsupported.';
+        this.store.notify(account.user_id, account.id, `paused:${account.id}:${account.version}`,
+          `⚠️ ${this.accountName(account)}\n${reason} Monitoring paused. Run acadence reauth or connect again to resume.`, now);
+      });
+    } else if (attempts >= 3) {
       this.store.notify(account.user_id, account.id, `error:${account.id}:${code}:${Math.floor(now / (24 * HOUR))}`,
-        `⚠️ ${this.accountName(account)}\n${code === 'quota_schema' ? 'provider quota format is unsupported; check for an Acadence update' : 'provider requests repeatedly failed; Acadence will keep retrying'}.`, now);
+        `⚠️ ${this.accountName(account)}\nprovider requests repeatedly failed; Acadence will keep retrying.`, now);
     }
   }
+
   async poll(account: Account, now: number) {
     this.store.run('UPDATE accounts SET next_poll=? WHERE id=?', now + HOUR, account.id);
     try {

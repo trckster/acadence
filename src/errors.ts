@@ -51,6 +51,6 @@ export function formatError(error: unknown): string {
 
 export function providerErrorMessage(code: string): string {
   return ({ auth: 'authentication expired or rejected; run acadence reauth',
-    unavailable: 'provider unavailable', quota_schema: 'unsupported provider usage format',
+    unavailable: 'provider unavailable', quota_schema: 'subscription quota unavailable or unsupported; monitoring paused; run acadence reauth or connect again',
     rate_limit: 'provider rate limit reached' } as Record<string, string>)[code] ?? code;
 }

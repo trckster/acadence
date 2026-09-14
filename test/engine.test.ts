@@ -659,3 +659,29 @@ test('exhausted windows defer openings without failures and resume after reset o
     }
   }
 });
+
+test('unsupported subscription quota pauses polling, jobs and reminders across restart', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'acadence-paused-'));
+  const path = join(directory, 'test.sqlite');
+  let recovered: Store | undefined;
+  const { store, account, engine } = fixture({ execute: async () => { throw new ProviderError('quota_schema'); } }, path);
+  try {
+    const now = Date.now();
+    engine.observe(account(), { windows: [{ kind: 'five_hour', used: 0, resetsAt: now + HOUR }] }, now);
+    engine.reminders(now);
+    engine.enqueue(account(), 'manual', 'manual:a', now);
+    await engine.poll(account(), now);
+    assert.equal(account().status, 'monitoring_paused');
+    assert.equal(account().next_session, null);
+    assert.equal(store.all('SELECT * FROM jobs').length, 0);
+    assert.equal(store.all('SELECT * FROM windows WHERE present=1').length, 0);
+    assert.match(store.get<{ body: string }>('SELECT body FROM notifications')!.body, /Monitoring paused/);
+    assert.equal(store.all('SELECT * FROM notifications').length, 1);
+    store.close();
+    recovered = new Store(path);
+    const worker = new Engine(recovered, vault, { execute: async () => assert.fail('paused account contacted provider') });
+    await worker.tick(now + 48 * HOUR);
+    assert.equal(recovered.all('SELECT * FROM jobs').length, 0);
+    assert.equal(recovered.all('SELECT * FROM notifications').length, 1);
+  } finally { recovered ? recovered.close() : store.close(); rmSync(directory, { recursive: true, force: true }); }
+});

@@ -216,3 +216,69 @@ test('legacy duplicate identities can reauthenticate without allowing new duplic
       payload: { credentials } })).statusCode, 409);
   } finally { await f.close(); }
 });
+
+for (const action of ['reauth', 'connect']) {
+  test(`${action} resumes a paused account, while usage and triggers leave it paused`, async () => {
+    const f = await fixture();
+    try {
+      const headers = await f.login(1);
+      const payload = { provider: 'codex', category: 'personal', credentials };
+      const id = (await f.app.inject({ method: 'POST', url: '/v1/accounts', headers, payload })).json().id;
+      let calls = 0;
+      f.engine.providers.execute = async () => { calls++; throw new ProviderError('quota_schema'); };
+      await f.app.inject({ method: 'POST', url: `/v1/accounts/${id}/usage`, headers });
+      await f.app.inject({ method: 'POST', url: `/v1/accounts/${id}/usage`, headers });
+      assert.equal((await f.app.inject({ method: 'POST', url: '/v1/trigger', headers })).json().queued, 0);
+      assert.equal(calls, 1);
+      const resumed = await f.app.inject(action === 'reauth'
+        ? { method: 'PUT', url: `/v1/accounts/${id}`, headers, payload: { credentials } }
+        : { method: 'POST', url: '/v1/accounts', headers, payload });
+      assert.equal(resumed.statusCode, 200);
+      const accounts = (await f.app.inject({ url: '/v1/accounts', headers })).json();
+      assert.equal(accounts.length, 1);
+      assert.equal(accounts[0].id, id);
+      assert.equal(accounts[0].status, 'active');
+      assert.equal(accounts[0].lastError, null);
+      f.engine.providers.execute = async () => { calls++; return { windows: [{ kind: 'weekly', used: 10, resetsAt: null }] }; };
+      await f.engine.tick();
+      assert.equal(calls, 2);
+      assert.equal((await f.app.inject({ method: 'POST', url: '/v1/accounts', headers, payload })).statusCode, 409);
+    } finally { await f.close(); }
+  });
+}
+
+for (const failSend of [false, true]) {
+  test(`pausing cancels cached Telegram reminders without changing a replacement warning (${failSend})`, async () => {
+    const f = await fixture();
+    try {
+      const headers = await f.login(1);
+      const id = (await f.app.inject({ method: 'POST', url: '/v1/accounts', headers,
+        payload: { provider: 'codex', category: 'personal', credentials } })).json().id;
+      f.store.run('DELETE FROM notifications');
+      const account = f.store.get<import('../src/db.js').Account>('SELECT * FROM accounts WHERE id=?', id)!;
+      f.store.notify(account.user_id, id, 'reminder:one', 'first', Date.now());
+      f.store.notify(account.user_id, id, 'reminder:two', 'second', Date.now());
+      const sent: string[] = [];
+      const sender = new Telegram(f.store, async (_method, data) => {
+        sent.push((data as { text: string }).text);
+        if (sent.length === 1) {
+          f.engine.failure(account, new ProviderError('quota_schema'), 1, Date.now());
+          if (failSend) throw new Error('send failed');
+        }
+      });
+      await sender.send();
+      assert.deepEqual(sent, ['first']);
+      const warning = f.store.get<{ sent: number | null; attempts: number }>('SELECT sent,attempts FROM notifications')!;
+      assert.equal(warning.sent, null);
+      assert.equal(warning.attempts, 0);
+      await sender.send();
+      assert.equal(sent.length, 2);
+      assert.match(sent[1]!, /Monitoring paused/);
+      const usage = (await f.app.inject({ method: 'POST', url: `/v1/accounts/${id}/usage`, headers })).json();
+      assert.equal(usage.status, 'monitoring_paused');
+      assert.equal(usage.lastError, 'quota_schema');
+      assert.deepEqual(usage.pending, []);
+      assert.deepEqual(usage.limits, []);
+    } finally { await f.close(); }
+  });
+}

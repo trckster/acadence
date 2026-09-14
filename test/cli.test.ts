@@ -26,17 +26,19 @@ test('help commands work at every level and removed commands and flags are rejec
   assert.equal(await runCli([], process.env), help);
   const version = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
   assert.ok(help.startsWith(`Acadence ${version}\n`));
-  for (const command of ['see', 'connect', 'disconnect', 'reauth']) assert.ok(help.includes(command));
+  for (const command of ['see', 'connect', 'disconnect', 'reauth', 'update']) assert.ok(help.includes(command));
   assert.doesNotMatch(help, /^  accounts\b/m);
   await assert.rejects(runCli(['accounts', 'list'], process.env), /unknown command/);
-  for (const path of [[], ['see'], ['connect'], ['disconnect'], ['reauth'], ['schedule', 'add']]) {
+  for (const path of [[], ['see'], ['connect'], ['disconnect'], ['reauth'], ['update'], ['schedule', 'add']]) {
     const output = await runCli(['help', ...path], process.env);
     assert.match(output, /Usage: acadence/);
-    assert.doesNotMatch(output, /--help|--version|\bupdate\b|<account>|<id>/);
+    assert.doesNotMatch(output, /--help|--version|<account>|<id>/);
   }
   assert.match(await runCli(['reauth', 'help'], process.env), /Choose an account/);
+  assert.match(await runCli(['update', 'help'], process.env), /Update this installation/);
+  await assert.rejects(runCli(['update'], process.env), /Self-update requires a global npm installation/);
   for (const args of [['accounts'], ['accounts', 'reauth'], ['accounts', 'connect'], ['accounts', 'disconnect'], ['--version'], ['-V'], ['usage'], ['schedule', 'update', '06:00', '07:00'], ['help', 'missing'],
-    ...[[], ['connect'], ['disconnect'], ['reauth'], ['schedule', 'add'], ['help']].flatMap(path => ['--help', '-h'].map(flag => [...path, flag]))]) {
+    ...[[], ['connect'], ['disconnect'], ['reauth'], ['update'], ['schedule', 'add'], ['help']].flatMap(path => ['--help', '-h'].map(flag => [...path, flag]))]) {
     await assert.rejects(runCli(args, process.env), /unknown (?:command|option)|Unknown command/);
   }
 });

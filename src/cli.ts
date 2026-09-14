@@ -12,6 +12,7 @@ import { formatTimestamp, formatUsage } from './format.js';
 import { select } from './select.js';
 import { withSpinner } from './spinner.js';
 import { fetchWithContext, responseJson, requestTarget, RequestError, formatError, providerErrorMessage } from './errors.js';
+import { updateAcadence } from './update.js';
 
 process.umask(0o077);
 const version = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -87,6 +88,7 @@ async function credentials(provider: Provider, consume: (data: unknown) => Promi
   }
 }
 
+program.command('update').description('Update this installation to the latest release').action(async () => updateAcadence());
 program.command('login').description('Sign in and link Telegram notifications').option('--api <url>', 'API override for self-hosting', production).action(async options => {
   const url = validateUrl(options.api);
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;

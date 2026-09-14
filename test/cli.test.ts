@@ -10,6 +10,7 @@ import { Vault, hash, secret } from '../src/security.js';
 import { Engine } from '../src/engine.js';
 import { Telegram } from '../src/telegram.js';
 import { createApi } from '../src/api.js';
+import { ProviderError } from '../src/providers.js';
 
 async function runCli(args: string[], env: NodeJS.ProcessEnv, input = ''): Promise<string> {
   return new Promise((resolveOutput, reject) => {
@@ -113,6 +114,16 @@ test('see fetches owned accounts and labels saved usage only when refresh fails'
     const execute = engine.providers.execute;
     engine.providers.execute = async () => { throw new Error('offline'); };
     assert.match(await cli(), /Week: 45% used; resets not active \(last known; checked /);
+    engine.providers.execute = execute;
+
+    engine.providers.execute = async () => { throw new ProviderError('quota_schema'); };
+    const inactiveOutput = await cli();
+    const inactiveAccount = 'codex / personal / personal@example.com\n    inactive\n    subscription unavailable; run acadence reauth';
+    assert.ok(inactiveOutput.trim().split('\n\n').includes(inactiveAccount));
+    assert.equal(await cli(), inactiveOutput);
+    assert.ok(inactiveOutput.trim().split('\n\n').includes('codex / personal / email unavailable\n    inactive\n    subscription unavailable; run acadence reauth'));
+    assert.doesNotMatch(inactiveOutput, /monitoring paused|last known/);
+    store.run("UPDATE accounts SET status='active', last_error=NULL WHERE id IN ('personal','new')");
     engine.providers.execute = execute;
 
     store.run('UPDATE accounts SET credentials=? WHERE id=?', vault.seal({ tokens: { id_token: `header.${Buffer.from(JSON.stringify({ email: 'work@example.com' })).toString('base64url')}.signature` } }, 'new'), 'new');

@@ -166,6 +166,11 @@ async function showAccounts() {
   for (const row of rows) {
     if (row !== rows[0]) console.log();
     console.log(`${row.provider} / ${row.category} / ${row.email ?? 'email unavailable'}`);
+    if (row.status === 'monitoring_paused') {
+      console.log('    inactive');
+      console.log('    subscription unavailable; run acadence reauth');
+      continue;
+    }
     console.log(`    ${row.status.replaceAll('_', ' ')}${row.lastError ? ` (${providerErrorMessage(row.lastError)})` : ''}`);
     if (row.refreshError) console.log(`    Usage unavailable: ${providerErrorMessage(row.refreshError)}`);
     for (const [kind, label] of [['five_hour', '5h'], ['weekly', 'Week']]) {

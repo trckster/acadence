@@ -64,14 +64,16 @@ export class Telegram {
     if (this.sending) return;
     this.sending = true;
     try {
-      const pending = this.store.all<{ id: number; body: string; telegram_id: string; attempts: number }>(`SELECT n.id,n.body,n.attempts,u.telegram_id FROM notifications n
+      const pending = this.store.all<{ id: number; dedupe: string; body: string; telegram_id: string; attempts: number }>(`SELECT n.id,n.dedupe,n.body,n.attempts,u.telegram_id FROM notifications n
         JOIN users u ON u.id=n.user_id WHERE n.sent IS NULL AND n.due<=? ORDER BY n.id LIMIT 20`, now);
       for (const item of pending) {
+        // Pausing or reconnecting can cancel queued messages while a send awaits Telegram.
+        if (!this.store.get('SELECT id FROM notifications WHERE id=? AND dedupe=? AND sent IS NULL', item.id, item.dedupe)) continue;
         try {
           await this.api('sendMessage', { chat_id: item.telegram_id, text: item.body });
-          this.store.run('UPDATE notifications SET sent=? WHERE id=?', Date.now(), item.id);
+          this.store.run('UPDATE notifications SET sent=? WHERE id=? AND dedupe=?', Date.now(), item.id, item.dedupe);
         } catch {
-          this.store.run('UPDATE notifications SET attempts=attempts+1,due=? WHERE id=?', Date.now() + Math.min(3_600_000, 60_000 * 2 ** Math.min(item.attempts, 6)), item.id);
+          this.store.run('UPDATE notifications SET attempts=attempts+1,due=? WHERE id=? AND dedupe=?', Date.now() + Math.min(3_600_000, 60_000 * 2 ** Math.min(item.attempts, 6)), item.id, item.dedupe);
         }
       }
     } finally { this.sending = false; }

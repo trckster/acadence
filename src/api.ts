@@ -111,7 +111,7 @@ export async function createApi(store: Store, vault: Vault, engine: Engine, botU
   });
   app.post<{ Params: { id: string } }>('/v1/accounts/:id/usage', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async request => {
     const account = owned(authenticate(request.headers.authorization), request.params.id);
-    if (account.status !== 'active') return { limits: [], refreshError: account.status === 'monitoring_paused'
+    if (account.status !== 'active') return { status: account.status, lastError: account.last_error, pending: [], limits: [], refreshError: account.status === 'monitoring_paused'
       ? 'monitoring paused; run acadence reauth or connect again' : 'reauthentication required' };
     const operation = await engine.runIfIdle(account.id, async () => {
       const snapshot = await engine.poll(account, Date.now());

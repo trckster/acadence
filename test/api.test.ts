@@ -246,3 +246,39 @@ for (const action of ['reauth', 'connect']) {
     } finally { await f.close(); }
   });
 }
+
+for (const failSend of [false, true]) {
+  test(`pausing cancels cached Telegram reminders without changing a replacement warning (${failSend})`, async () => {
+    const f = await fixture();
+    try {
+      const headers = await f.login(1);
+      const id = (await f.app.inject({ method: 'POST', url: '/v1/accounts', headers,
+        payload: { provider: 'codex', category: 'personal', credentials } })).json().id;
+      f.store.run('DELETE FROM notifications');
+      const account = f.store.get<import('../src/db.js').Account>('SELECT * FROM accounts WHERE id=?', id)!;
+      f.store.notify(account.user_id, id, 'reminder:one', 'first', Date.now());
+      f.store.notify(account.user_id, id, 'reminder:two', 'second', Date.now());
+      const sent: string[] = [];
+      const sender = new Telegram(f.store, async (_method, data) => {
+        sent.push((data as { text: string }).text);
+        if (sent.length === 1) {
+          f.engine.failure(account, new ProviderError('quota_schema'), 1, Date.now());
+          if (failSend) throw new Error('send failed');
+        }
+      });
+      await sender.send();
+      assert.deepEqual(sent, ['first']);
+      const warning = f.store.get<{ sent: number | null; attempts: number }>('SELECT sent,attempts FROM notifications')!;
+      assert.equal(warning.sent, null);
+      assert.equal(warning.attempts, 0);
+      await sender.send();
+      assert.equal(sent.length, 2);
+      assert.match(sent[1]!, /Monitoring paused/);
+      const usage = (await f.app.inject({ method: 'POST', url: `/v1/accounts/${id}/usage`, headers })).json();
+      assert.equal(usage.status, 'monitoring_paused');
+      assert.equal(usage.lastError, 'quota_schema');
+      assert.deepEqual(usage.pending, []);
+      assert.deepEqual(usage.limits, []);
+    } finally { await f.close(); }
+  });
+}

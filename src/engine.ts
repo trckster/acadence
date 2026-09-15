@@ -192,6 +192,31 @@ export class Engine {
       this.failure(account, error, job.attempts + 1, now);
     }
   }
+  async refreshReminder(accountId: string, dedupe: string): Promise<string | null> {
+    const result = await this.runIfIdle(accountId, async () => {
+      const account = this.store.get<Account>('SELECT * FROM accounts WHERE id=?', accountId);
+      if (!account || account.status !== 'active') return null;
+      const snapshot = await this.poll(account, Date.now());
+      // Never fall back to the cached message when the provider cannot be read.
+      if (!snapshot) throw new Error('Reminder usage refresh failed');
+      const current = this.store.get<Account>('SELECT * FROM accounts WHERE id=?', accountId);
+      if (!current || current.status !== 'active' || current.version !== account.version) return null;
+      const now = Date.now();
+      const windows = this.store.all<WindowRow>('SELECT * FROM windows WHERE account_id=? AND present=1', accountId);
+      const window = windows.find(window => {
+        const key = `reminder:${accountId}:${window.kind}:${window.generation}`;
+        return dedupe === key || dedupe.startsWith(`${key}:`);
+      });
+      if (!window || window.used > 97 || window.resets_at === null || window.resets_at <= now ||
+          window.resets_at - now > (window.kind === 'five_hour' ? HOUR : 24 * HOUR)) return null;
+      if (window.kind === 'five_hour' && windows.some(other => other.kind === 'weekly' && other.used >= 100 &&
+          (other.resets_at === null || other.resets_at > now))) return null;
+      const user = this.store.get<User>('SELECT * FROM users WHERE id=?', current.user_id)!;
+      return `${this.accountName(current)}\n⏳ ${this.formatQuota({ kind: window.kind, used: window.used, resetsAt: window.resets_at }, now, user.timezone)}`;
+    });
+    if (!result) throw new Error('Reminder account is busy');
+    return result.result;
+  }
   reminders(now: number) {
     const rows = this.store.all<WindowRow & { user_id: string; timezone: string }>(`SELECT w.*,a.user_id,u.timezone FROM windows w JOIN accounts a ON a.id=w.account_id JOIN users u ON u.id=a.user_id
       WHERE w.present=1 AND a.status='active' AND w.used<=97 AND w.resets_at>?`, now);

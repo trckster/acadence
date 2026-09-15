@@ -20,7 +20,8 @@ export class Telegram {
   private stopped = false;
   private sending = false;
   lastSuccess = Date.now();
-  constructor(readonly store: Store, readonly api: TelegramApi) {}
+  constructor(readonly store: Store, readonly api: TelegramApi,
+    readonly refreshReminder?: (accountId: string, dedupe: string) => Promise<string | null>) {}
   accept(update: any, now = Date.now()) {
     this.store.transaction(() => this.link(update, now));
   }
@@ -64,13 +65,26 @@ export class Telegram {
     if (this.sending) return;
     this.sending = true;
     try {
-      const pending = this.store.all<{ id: number; dedupe: string; body: string; telegram_id: string; attempts: number }>(`SELECT n.id,n.dedupe,n.body,n.attempts,u.telegram_id FROM notifications n
+      const pending = this.store.all<{ id: number; account_id: string | null; dedupe: string; body: string; telegram_id: string; attempts: number }>(`SELECT n.id,n.account_id,n.dedupe,n.body,n.attempts,u.telegram_id FROM notifications n
         JOIN users u ON u.id=n.user_id WHERE n.sent IS NULL AND n.due<=? ORDER BY n.id LIMIT 20`, now);
       for (const item of pending) {
         // Pausing or reconnecting can cancel queued messages while a send awaits Telegram.
         if (!this.store.get('SELECT id FROM notifications WHERE id=? AND dedupe=? AND sent IS NULL', item.id, item.dedupe)) continue;
         try {
-          await this.api('sendMessage', { chat_id: item.telegram_id, text: item.body });
+          let body = item.body;
+          if (item.dedupe.startsWith('reminder:')) {
+            if (!this.refreshReminder || !item.account_id) throw new Error('Reminder refresh unavailable');
+            const fresh = await this.refreshReminder(item.account_id, item.dedupe);
+            if (fresh === null) {
+              this.store.run('DELETE FROM notifications WHERE id=? AND dedupe=? AND sent IS NULL', item.id, item.dedupe);
+              continue;
+            }
+            body = fresh;
+            this.store.run('UPDATE notifications SET body=? WHERE id=? AND dedupe=? AND sent IS NULL', body, item.id, item.dedupe);
+          }
+          // A refresh can pause the account and replace its queued notifications.
+          if (!this.store.get('SELECT id FROM notifications WHERE id=? AND dedupe=? AND sent IS NULL', item.id, item.dedupe)) continue;
+          await this.api('sendMessage', { chat_id: item.telegram_id, text: body });
           this.store.run('UPDATE notifications SET sent=? WHERE id=? AND dedupe=?', Date.now(), item.id, item.dedupe);
         } catch {
           this.store.run('UPDATE notifications SET attempts=attempts+1,due=? WHERE id=? AND dedupe=?', Date.now() + Math.min(3_600_000, 60_000 * 2 ** Math.min(item.attempts, 6)), item.id, item.dedupe);

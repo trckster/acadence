@@ -265,7 +265,7 @@ for (const failSend of [false, true]) {
           f.engine.failure(account, new ProviderError('quota_schema'), 1, Date.now());
           if (failSend) throw new Error('send failed');
         }
-      });
+      }, async (_accountId, dedupe) => dedupe === 'reminder:one' ? 'first' : 'second');
       await sender.send();
       assert.deepEqual(sent, ['first']);
       const warning = f.store.get<{ sent: number | null; attempts: number }>('SELECT sent,attempts FROM notifications')!;

@@ -32,7 +32,7 @@ function fixture(kind: WindowKind = 'five_hour') {
     snapshot: (value: Snapshot) => { snapshot = value; } };
 }
 
-for (const kind of ['five_hour', 'weekly'] as const) {
+for (const kind of ['five_hour', 'weekly', 'weekly_fable'] as const) {
   test(`${kind} reminder pulls fresh usage immediately before sending`, async () => {
     const f = fixture(kind);
     try {
@@ -40,6 +40,7 @@ for (const kind of ['five_hour', 'weekly'] as const) {
       assert.equal(f.polls(), 1);
       assert.equal(f.sent.length, 1);
       assert.match(f.sent[0]!, /9% left/);
+      if (kind === 'weekly_fable') assert.match(f.sent[0]!, /Week \(Fable\): 9% left/);
       assert.doesNotMatch(f.sent[0]!, /60% left/);
       assert.equal(f.store.get<{ body: string }>('SELECT body FROM notifications')!.body, f.sent[0]);
       await f.telegram.send();
@@ -60,6 +61,19 @@ for (const kind of ['five_hour', 'weekly'] as const) {
     });
   }
 }
+
+test('a fresh exhausted overall week suppresses a queued Fable reminder', async () => {
+  const f = fixture('weekly_fable');
+  try {
+    f.snapshot({ windows: [
+      { kind: 'weekly_fable', used: 91, resetsAt: f.resetsAt },
+      { kind: 'weekly', used: 100, resetsAt: null }
+    ] });
+    await f.telegram.send();
+    assert.deepEqual(f.sent, []);
+    assert.equal(f.store.all("SELECT * FROM notifications WHERE dedupe LIKE 'reminder:%'").length, 0);
+  } finally { f.store.close(); }
+});
 
 for (const scenario of ['missing', 'expired', 'rolled over', 'weekly exhausted'] as const) {
   test(`a fresh ${scenario} window suppresses the queued reminder`, async () => {

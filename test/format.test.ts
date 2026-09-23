@@ -6,6 +6,9 @@ test('idle usage has no reset countdown while rounded-zero active usage does', (
   const now = Date.parse('2026-09-09T08:17:53Z');
   assert.equal(formatUsage({ kind: 'five_hour', used: 0, resetsAt: null }, now), '5h: 0% used; not active');
   assert.equal(formatUsage({ kind: 'weekly', used: 0, resetsAt: null }, now), 'Week: 0% used; not active');
+  assert.equal(formatUsage({ kind: 'weekly_fable', used: 0, resetsAt: null }, now), 'Week (Fable): 0% used; not active');
+  assert.equal(formatUsage({ kind: 'weekly_fable', used: 0, resetsAt: now + 2 * 60_000 }, now), 'Week (Fable): 0% used; resets in 2m');
+  assert.equal(formatUsage({ kind: 'weekly_fable', used: 31.5, resetsAt: now + 60 * 60_000 }, now), 'Week (Fable): 31.5% used; resets in 1h 0m');
   assert.equal(formatUsage({ kind: 'five_hour', used: 0, resetsAt: now + 299 * 60_000 }, now), '5h: 0% used; resets in 4h 59m');
 });
 

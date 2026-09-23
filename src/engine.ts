@@ -1,7 +1,7 @@
 import { Store, type Account, type Job, type User, type WindowRow } from './db.js';
 import { anchorsAround, canContinue, FIVE, HOUR, nextAnchor, nextScheduled, resetDetected, windowRolledOver, type Snapshot, type Window } from './domain.js';
 import { accountEmail, type Credentials, type ProviderAdapter, ProviderError } from './providers.js';
-import { formatReset } from './format.js';
+import { formatReset, windowLabels } from './format.js';
 import { Vault } from './security.js';
 
 export class Engine {
@@ -22,7 +22,7 @@ export class Engine {
   }
   private formatQuota(window: Window, now: number, timezone: string) {
     const left = Number(Math.max(0, Math.min(100, 100 - window.used)).toFixed(2));
-    const label = window.kind === 'five_hour' ? '5h' : 'Week';
+    const label = windowLabels[window.kind];
     return `${label}: ${left}% left; ${window.resetsAt === null ? 'not active' : `resets ${formatReset(window.resetsAt, now, timezone)}`}`;
   }
   enqueue(account: Account, reason: string, dedupe: string, now: number, expires: number | null = null) {
@@ -57,7 +57,7 @@ export class Engine {
         const old = previous.find(w => w.kind === window.kind);
         // Preserve the expiry before an idle response clears its timestamp.
         // A future deadline means another client has already opened the next window.
-        if (old?.present && old.resets_at !== null && old.resets_at <= now &&
+        if (window.kind !== 'weekly_fable' && old?.present && old.resets_at !== null && old.resets_at <= now &&
             (account.last_success === null || account.last_success < old.resets_at) &&
             (window.resetsAt !== null ? window.resetsAt <= now : window.used === 0)) {
           this.enqueue(account, 'expiry', `expiry:${account.id}`, now);
@@ -72,7 +72,7 @@ export class Engine {
           resets.push(`${window.kind}:${generation}`);
           this.store.notify(account.user_id, account.id, `reset:${account.id}:${window.kind}:${generation}`, `${this.accountName(account)}\n🎁 Quota restored before the scheduled reset.\n${this.formatQuota(window, now, user.timezone)}`, now);
           if (window.kind === 'weekly') weeklyReset = true;
-          else fiveReset = true;
+          else if (window.kind === 'five_hour') fiveReset = true;
         }
       }
       const hasFive = snapshot.windows.some(w => w.kind === 'five_hour');
@@ -157,7 +157,7 @@ export class Engine {
       return;
     }
     if (job.reason === 'expiry') {
-      const windows = this.store.all<WindowRow>('SELECT * FROM windows WHERE account_id=? AND present=1', account.id);
+      const windows = this.store.all<WindowRow>("SELECT * FROM windows WHERE account_id=? AND present=1 AND kind IN ('five_hour','weekly')", account.id);
       if (!windows.some(window => window.resets_at === null ? window.used === 0 :
           window.resets_at <= now && (account.last_success === null || account.last_success < window.resets_at))) {
         this.store.run('DELETE FROM jobs WHERE id=?', job.id);
@@ -167,7 +167,7 @@ export class Engine {
     // Keep hourly polling active so early quota restoration is still detected.
     // Do not spend a provider operation on a known exhausted window.
     const exhausted = this.store.all<WindowRow>(`SELECT * FROM windows
-      WHERE account_id=? AND present=1 AND used>=100
+      WHERE account_id=? AND present=1 AND kind IN ('five_hour','weekly') AND used>=100
       AND (resets_at IS NULL OR resets_at>?)`, account.id, now);
     if (exhausted.length) {
       const due = Math.min(now + HOUR, ...exhausted.map(window => window.resets_at ?? Infinity));
@@ -209,7 +209,7 @@ export class Engine {
       });
       if (!window || window.used > 97 || window.resets_at === null || window.resets_at <= now ||
           window.resets_at - now > (window.kind === 'five_hour' ? HOUR : 24 * HOUR)) return null;
-      if (window.kind === 'five_hour' && windows.some(other => other.kind === 'weekly' && other.used >= 100 &&
+      if (window.kind !== 'weekly' && windows.some(other => other.kind === 'weekly' && other.used >= 100 &&
           (other.resets_at === null || other.resets_at > now))) return null;
       const user = this.store.get<User>('SELECT * FROM users WHERE id=?', current.user_id)!;
       return `${this.accountName(current)}\n⏳ ${this.formatQuota({ kind: window.kind, used: window.used, resetsAt: window.resets_at }, now, user.timezone)}`;
@@ -221,8 +221,8 @@ export class Engine {
     const rows = this.store.all<WindowRow & { user_id: string; timezone: string }>(`SELECT w.*,a.user_id,u.timezone FROM windows w JOIN accounts a ON a.id=w.account_id JOIN users u ON u.id=a.user_id
       WHERE w.present=1 AND a.status='active' AND w.used<=97 AND w.resets_at>?`, now);
     for (const window of rows) {
-      // A short-window reminder is not actionable while weekly quota is exhausted.
-      if (window.kind === 'five_hour' && this.store.get(`SELECT account_id FROM windows
+      // Session and model quota still draw from the overall weekly allowance.
+      if (window.kind !== 'weekly' && this.store.get(`SELECT account_id FROM windows
         WHERE account_id=? AND kind='weekly' AND present=1 AND used>=100
         AND (resets_at IS NULL OR resets_at>?)`, window.account_id, now)) continue;
       const lead = window.kind === 'five_hour' ? HOUR : 24 * HOUR;
@@ -242,7 +242,7 @@ export class Engine {
       // same expired window while provider usage reporting catches up.
       const expired = this.store.all<Account>(`SELECT DISTINCT a.* FROM accounts a JOIN windows w ON w.account_id=a.id
         WHERE a.status='active' AND (a.last_error IS NULL OR a.last_error!='quota_schema')
-        AND w.present=1 AND w.resets_at<=? AND (a.last_success IS NULL OR a.last_success<w.resets_at)`, now);
+        AND w.present=1 AND w.kind IN ('five_hour','weekly') AND w.resets_at<=? AND (a.last_success IS NULL OR a.last_success<w.resets_at)`, now);
       for (const account of expired) this.enqueue(account, 'expiry', `expiry:${account.id}`, now);
       const due = this.store.all<Account>("SELECT * FROM accounts WHERE status='active' AND (last_error IS NULL OR last_error!='quota_schema') AND next_session<=?", now);
       for (const account of due) {

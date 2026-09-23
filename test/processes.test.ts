@@ -92,11 +92,13 @@ test('Claude refreshes on 401 and persists rotation before retrying quota lookup
       if (headers.Authorization === 'Bearer original') return new Response('{}', { status: 401 });
       assert.equal(headers.Authorization, 'Bearer rotated-access');
       assert.equal(saved.length, 1);
-      return new Response(JSON.stringify({ five_hour: { utilization: 0, resets_at: null }, seven_day: null }), { status: 200 });
+      return new Response(JSON.stringify({ five_hour: { utilization: 0, resets_at: null }, seven_day: null,
+        limits: [{ kind: 'weekly_scoped', percent: 31, resets_at: null, scope: { model: { display_name: 'Fable' } } }]
+      }), { status: 200 });
     };
     const credentials = { email: 'claude@example.com', claudeAiOauth: { accessToken: 'original', refreshToken: 'original-refresh', expiresAt: Date.now() + 3600000, scopes: ['user:profile','user:inference'] } };
     const result = await new Providers().execute('claude', credentials, 'poll', data => saved.push(data));
-    assert.equal(result!.windows[0]!.kind, 'five_hour');
+    assert.deepEqual(result!.windows, [{ kind: 'five_hour', used: 0, resetsAt: null }, { kind: 'weekly_fable', used: 31, resetsAt: null }]);
     assert.equal(requests, 3);
     assert.equal((saved.at(-1) as typeof credentials).claudeAiOauth.refreshToken, 'rotated-refresh');
     assert.equal((saved.at(-1) as typeof credentials).email, 'claude@example.com');

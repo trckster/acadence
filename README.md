@@ -5,7 +5,7 @@ Schedule Claude Code and Codex usage windows from your terminal, with updates in
 ## Features
 
 - **Daily schedule** — Start usage windows automatically at your preferred times.
-- **Usage tracking** — Check current usage and reset times for each account.
+- **Usage tracking** — Check current usage and reset times for each account, including Claude's separate Fable weekly allowance when available.
 - **Telegram updates** — Get notified about resets, expiring usage windows, and account issues.
 - **Multiple accounts** — Manage Claude Code and Codex accounts in one place.
 

@@ -14,7 +14,7 @@ export const scheduleSchema = z.object({
 });
 export type Schedule = z.infer<typeof scheduleSchema>;
 export type Provider = 'claude' | 'codex';
-export type WindowKind = 'five_hour' | 'weekly';
+export type WindowKind = 'five_hour' | 'weekly' | 'weekly_fable';
 export type Window = { kind: WindowKind; used: number; resetsAt: number | null };
 export type Snapshot = { windows: Window[] };
 

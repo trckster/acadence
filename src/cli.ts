@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { anchorSchema, timezoneSchema, type Provider, type Schedule } from './domain.js';
 import { accountCategory, accountEmail, claudeAccountEmail, cleanEnvironment, parseCredentials, runProcess } from './providers.js';
-import { formatTimestamp, formatUsage } from './format.js';
+import { formatTimestamp, formatUsage, windowLabels } from './format.js';
 import { select } from './select.js';
 import { withSpinner } from './spinner.js';
 import { fetchWithContext, responseJson, requestTarget, RequestError, formatError, providerErrorMessage } from './errors.js';
@@ -173,8 +173,9 @@ async function showAccounts() {
     }
     console.log(`    ${row.status.replaceAll('_', ' ')}${row.lastError ? ` (${providerErrorMessage(row.lastError)})` : ''}`);
     if (row.refreshError) console.log(`    Usage unavailable: ${providerErrorMessage(row.refreshError)}`);
-    for (const [kind, label] of [['five_hour', '5h'], ['weekly', 'Week']]) {
+    for (const [kind, label] of Object.entries(windowLabels)) {
       const limit = row.limits.find((item: any) => item.kind === kind);
+      if (kind === 'weekly_fable' && !limit) continue;
       console.log(limit
         ? `    ${formatUsage(limit, now)}${row.stale ? ` (last known; checked ${formatTimestamp(limit.sampledAt)})` : ''}`
         : `    ${label}: usage unavailable`);

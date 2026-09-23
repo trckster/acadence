@@ -10,7 +10,7 @@ import { Vault, hash, secret } from '../src/security.js';
 import { Engine } from '../src/engine.js';
 import { Telegram } from '../src/telegram.js';
 import { createApi } from '../src/api.js';
-import { ProviderError } from '../src/providers.js';
+import { parseClaudeUsage, ProviderError } from '../src/providers.js';
 
 async function runCli(args: string[], env: NodeJS.ProcessEnv, input = ''): Promise<string> {
   return new Promise((resolveOutput, reject) => {
@@ -42,6 +42,53 @@ test('help commands work at every level and removed commands and flags are rejec
     ...[[], ['connect'], ['disconnect'], ['reauth'], ['update'], ['schedule', 'add'], ['help']].flatMap(path => ['--help', '-h'].map(flag => [...path, flag]))]) {
     await assert.rejects(runCli(args, process.env), /unknown (?:command|option)|Unknown command/);
   }
+});
+
+test('see carries Fable usage through polling and storage, with optional rows and saved-data labels', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'acadence-fable-test-'));
+  const store = new Store(':memory:');
+  const vault = new Vault(Buffer.alloc(32, 4).toString('base64'));
+  const reset = '2030-09-25T03:59:58.821852+00:00';
+  let limits: unknown[] | null = [{ kind: 'weekly_scoped', percent: 31.5, resets_at: reset, scope: { model: { display_name: 'Fable' } } }];
+  let failure: ProviderError | undefined;
+  const engine = new Engine(store, vault, { execute: async () => {
+    if (failure) throw failure;
+    return parseClaudeUsage({ five_hour: { utilization: 12, resets_at: reset }, seven_day: { utilization: 25, resets_at: reset }, limits });
+  } });
+  const app = await createApi(store, vault, engine, 'test_bot');
+  try {
+    const url = await app.listen({ host: '127.0.0.1', port: 0 });
+    const token = secret();
+    store.run("INSERT INTO users(id,telegram_id,timezone) VALUES('owner','1','UTC')");
+    store.run('INSERT INTO tokens(hash,user_id,created,expires) VALUES(?,?,?,?)', hash(token), 'owner', Date.now(), Date.now() + 60_000);
+    store.run("INSERT INTO accounts(id,user_id,provider,category,credentials) VALUES('fable','owner','claude','personal',?)",
+      vault.seal({ email: 'fable@example.com', claudeAiOauth: {} }, 'fable'));
+    const configDir = join(home, '.config', 'acadence');
+    await mkdir(configDir, { recursive: true });
+    await writeFile(join(configDir, 'client.json'), JSON.stringify({ url, token }));
+    const cli = () => runCli(['see'], { ...process.env, HOME: home, TZ: 'UTC' });
+    const output = await cli();
+    assert.match(output, /5h: 12% used/);
+    assert.match(output, /Week: 25% used/);
+    assert.match(output, /Week \(Fable\): 31\.5% used; resets 2030-09-25 03:59/);
+    assert.doesNotMatch(output, /last known/);
+    const saved = (await app.inject({ url: '/v1/accounts', headers: { authorization: `Bearer ${token}` } })).json()[0].limits;
+    assert.deepEqual(saved.find((limit: any) => limit.kind === 'weekly_fable'), {
+      kind: 'weekly_fable', used: 31.5, resetsAt: Date.parse(reset), sampledAt: store.get<{ sampled_at: number }>("SELECT sampled_at FROM windows WHERE kind='weekly_fable'")!.sampled_at
+    });
+    engine.busy.add('fable');
+    assert.match(await cli(), /Week \(Fable\): 31\.5% used; resets 2030-09-25 03:59 \(last known; checked /);
+    engine.busy.clear();
+    for (const absent of [null, []]) {
+      limits = absent;
+      assert.doesNotMatch(await cli(), /Fable|last known/);
+      assert.equal(store.get<{ present: number }>("SELECT present FROM windows WHERE kind='weekly_fable'")!.present, 0);
+    }
+    limits = [{ kind: 'weekly_scoped', percent: 0, resets_at: null, scope: { model: { display_name: 'Fable' } } }];
+    assert.match(await cli(), /Week \(Fable\): 0% used; not active/);
+    failure = new ProviderError('auth');
+    assert.doesNotMatch(await cli(), /Fable|last known/);
+  } finally { await app.close(); store.close(); await rm(home, { recursive: true, force: true }); }
 });
 
 test('see fetches owned accounts and labels saved usage only when refresh fails', async () => {
@@ -97,6 +144,7 @@ test('see fetches owned accounts and labels saved usage only when refresh fails'
     assert.match(output, /codex \/ personal \/ personal@example.com\n    active/);
     assert.match(output, /5h: 30% used; resets 2030-09-08 17:00/);
     assert.match(output, /Week: 45% used; resets not active/);
+    assert.doesNotMatch(output, /Fable/);
     assert.doesNotMatch(output, /\b(?:AM|PM|checked)\b/);
     assert.match(output, /claude \/ work \/ work@example.com\n    reauth required \(authentication expired or rejected; run acadence reauth\)/);
     assert.match(output, /Usage unavailable: reauthentication required/);

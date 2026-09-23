@@ -1,4 +1,6 @@
-import type { Window } from './domain.js';
+import type { Window, WindowKind } from './domain.js';
+
+export const windowLabels: Record<WindowKind, string> = { five_hour: '5h', weekly: 'Week', weekly_fable: 'Week (Fable)' };
 
 export function formatTimestamp(timestamp: number, timezone?: string): string {
   const date = new Date(timestamp);
@@ -31,6 +33,6 @@ export function formatAccount(provider: string, email: string | null | undefined
 }
 
 export function formatUsage(window: Window, now: number, timezone?: string): string {
-  if (window.used === 0 && window.resetsAt === null) return `${window.kind === 'five_hour' ? '5h' : 'Week'}: 0% used; not active`;
-  return `${window.kind === 'five_hour' ? '5h' : 'Week'}: ${window.used}% used; resets ${formatReset(window.resetsAt, now, timezone)}`;
+  if (window.used === 0 && window.resetsAt === null) return `${windowLabels[window.kind]}: 0% used; not active`;
+  return `${windowLabels[window.kind]}: ${window.used}% used; resets ${formatReset(window.resetsAt, now, timezone)}`;
 }

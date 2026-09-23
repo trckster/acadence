@@ -69,11 +69,25 @@ export class ProviderError extends Error {
 }
 const used = z.number().finite().min(0).max(100);
 const claudeWindow = z.object({ utilization: used, resets_at: z.string().datetime({ offset: true }).nullable() });
+const claudeScopedLimit = z.object({
+  kind: z.literal('weekly_scoped'),
+  scope: z.object({ model: z.object({ display_name: z.literal('Fable') }) })
+});
 export function parseClaudeUsage(value: unknown): Snapshot {
-  const data = z.object({ five_hour: claudeWindow.nullable(), seven_day: claudeWindow.nullable() }).parse(value);
+  const data = z.object({
+    five_hour: claudeWindow.nullable(), seven_day: claudeWindow.nullable(),
+    limits: z.array(z.unknown()).nullish(), seven_day_overage_included: claudeWindow.nullish()
+  }).parse(value);
   const windows: Window[] = [];
   if (data.five_hour) windows.push({ kind: 'five_hour', used: data.five_hour.utilization, resetsAt: data.five_hour.resets_at ? Date.parse(data.five_hour.resets_at) : null });
   if (data.seven_day) windows.push({ kind: 'weekly', used: data.seven_day.utilization, resetsAt: data.seven_day.resets_at ? Date.parse(data.seven_day.resets_at) : null });
+  // Current responses identify Fable in limits[]; older responses used the overage-included bucket.
+  const scoped = data.limits?.filter(limit => claudeScopedLimit.safeParse(limit).success);
+  if (scoped && scoped.length > 1) throw new ProviderError('quota_schema');
+  const fable = scoped?.length
+    ? z.object({ percent: used, resets_at: claudeWindow.shape.resets_at }).transform(limit => ({ utilization: limit.percent, resets_at: limit.resets_at })).parse(scoped[0])
+    : data.limits == null ? data.seven_day_overage_included : null;
+  if (fable) windows.push({ kind: 'weekly_fable', used: fable.utilization, resetsAt: fable.resets_at ? Date.parse(fable.resets_at) : null });
   return { windows };
 }
 const codexWindow = z.object({ usedPercent: used, windowDurationMins: z.number().int().positive().nullable(), resetsAt: z.number().int().nonnegative().nullable() });

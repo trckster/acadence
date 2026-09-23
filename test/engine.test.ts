@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { Store, type Account, type Job } from '../src/db.js';
 import { Engine } from '../src/engine.js';
 import { Vault } from '../src/security.js';
-import { HOUR, FIVE, WEEK } from '../src/domain.js';
+import { HOUR, FIVE, WEEK, type Window } from '../src/domain.js';
 import { ProviderError, type ProviderAdapter } from '../src/providers.js';
 
 const vault = new Vault(Buffer.alloc(32, 7).toString('base64'));
@@ -80,6 +80,70 @@ test('weekly restoration notifies and queues one opening even with an anchor nea
   assert.equal(store.all('SELECT * FROM notifications').length, 2);
   store.close();
 });
+test('Fable restoration and expiry notify independently without scheduling account openings', async () => {
+  const { store, account, engine } = fixture();
+  try {
+    const now = Date.parse('2026-09-08T13:00:00Z');
+    const general: Window[] = [{ kind: 'five_hour', used: 20, resetsAt: now + FIVE }, { kind: 'weekly', used: 25, resetsAt: now + WEEK }];
+    engine.observe(account(), { windows: [...general, { kind: 'weekly_fable', used: 80, resetsAt: now + HOUR }] }, now - HOUR);
+    engine.observe(account(), { windows: [...general, { kind: 'weekly_fable', used: 10, resetsAt: now + HOUR }] }, now);
+    assert.equal(store.all('SELECT * FROM jobs').length, 0);
+    const restored = store.all<{ body: string }>("SELECT body FROM notifications WHERE dedupe LIKE 'reset:%'");
+    assert.equal(restored.length, 1);
+    assert.match(restored[0]!.body, /Week \(Fable\): 90% left/);
+    engine.plan(now + HOUR);
+    assert.equal(store.all('SELECT * FROM jobs').length, 0);
+    engine.observe(account(), { windows: [...general, { kind: 'weekly_fable', used: 0, resetsAt: null }] }, now + HOUR);
+    assert.equal(store.all('SELECT * FROM jobs').length, 0);
+    engine.enqueue(account(), 'expiry', 'expiry:a', now + HOUR);
+    await engine.executeJob(account(), store.all<Job>('SELECT * FROM jobs')[0]!, now + HOUR);
+    assert.equal(store.all('SELECT * FROM jobs').length, 0);
+    assert.equal(account().last_success, null);
+  } finally { store.close(); }
+});
+test('exhausted Fable allowance does not block openings or session reminders', async () => {
+  for (const resetsAt of [null, Date.parse('2030-09-25T03:59:58Z')]) {
+    let opens = 0;
+    const { store, account, engine } = fixture({ execute: async (_provider, _credentials, action) => {
+      assert.equal(action, 'open'); opens++; return null;
+    } });
+    try {
+      const now = Date.parse('2026-09-08T13:00:00Z');
+      engine.observe(account(), { windows: [
+        { kind: 'five_hour', used: 20, resetsAt: now + HOUR },
+        { kind: 'weekly', used: 25, resetsAt: now + WEEK },
+        { kind: 'weekly_fable', used: 100, resetsAt }
+      ] }, now);
+      engine.reminders(now);
+      assert.equal(store.all("SELECT * FROM notifications WHERE dedupe LIKE 'reminder:a:five_hour:%'").length, 1);
+      engine.enqueue(account(), 'anchor', 'anchor:a', now);
+      await engine.executeJob(account(), store.all<Job>('SELECT * FROM jobs')[0]!, now);
+      assert.equal(opens, 1);
+      assert.equal(store.all('SELECT * FROM jobs').length, 0);
+    } finally { store.close(); }
+  }
+});
+test('Fable reminders use the weekly lead time and wait for overall weekly quota', () => {
+  const { store, account, engine } = fixture();
+  try {
+    const now = Date.parse('2026-09-08T13:00:00Z');
+    engine.observe(account(), { windows: [
+      { kind: 'weekly', used: 100, resetsAt: now + WEEK },
+      { kind: 'weekly_fable', used: 40, resetsAt: now + 24 * HOUR }
+    ] }, now);
+    engine.reminders(now);
+    assert.equal(store.all('SELECT * FROM notifications').length, 0);
+    store.run("UPDATE windows SET used=99 WHERE kind='weekly'");
+    engine.reminders(now - 1);
+    assert.equal(store.all('SELECT * FROM notifications').length, 0);
+    engine.reminders(now);
+    engine.reminders(now);
+    const reminders = store.all<{ body: string }>('SELECT body FROM notifications');
+    assert.equal(reminders.length, 1);
+    assert.match(reminders[0]!.body, /Week \(Fable\): 60% left/);
+  } finally { store.close(); }
+});
+
 test('five-hour reset waits for a nearby anchor and absence cancels continuations', () => {
   const { store, account, engine } = fixture();
   const now = Date.parse('2026-09-08T12:00:00Z');

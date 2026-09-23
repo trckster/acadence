@@ -33,6 +33,62 @@ test('Claude preserves inactive and absent window distinctions', () => {
   assert.throws(() => parseClaudeUsage({ error: 'upstream outage' }));
   assert.throws(() => parseClaudeUsage({ five_hour: { utilization: 500, resets_at: null }, seven_day: null }));
 });
+const fableLimit = (percent: number, resets_at: string | null) => ({
+  kind: 'weekly_scoped', group: 'weekly', percent, resets_at,
+  scope: { model: { id: null, display_name: 'Fable' }, surface: null }, severity: 'normal', is_active: true
+});
+test('Claude reads the Fable percentage and independent reset from current usage rows', () => {
+  const resets_at = '2030-09-25T03:59:59.821660+00:00';
+  const fableReset = '2030-09-25T03:59:58.821852+00:00';
+  const snapshot = parseClaudeUsage({
+    five_hour: { utilization: 12, resets_at }, seven_day: { utilization: 25, resets_at },
+    limits: [
+      { kind: 'session', percent: 12, resets_at, scope: null },
+      { kind: 'weekly_all', percent: 25, resets_at, scope: null },
+      fableLimit(31, fableReset),
+      { kind: 'weekly_scoped', percent: 50, resets_at, scope: { model: { display_name: 'Sonnet' } } },
+      { kind: 'weekly_scoped', percent: 60, resets_at, scope: { surface: { display_name: 'Fable' } } },
+      { kind: 'future_limit' }
+    ]
+  });
+  assert.deepEqual(snapshot.windows, [
+    { kind: 'five_hour', used: 12, resetsAt: Date.parse(resets_at) },
+    { kind: 'weekly', used: 25, resetsAt: Date.parse(resets_at) },
+    { kind: 'weekly_fable', used: 31, resetsAt: Date.parse(fableReset) }
+  ]);
+});
+test('Claude distinguishes absent Fable allowance from inactive, active zero, and exhausted allowance', () => {
+  for (const limits of [undefined, null, [], [{ kind: 'weekly_all', scope: null }]]) {
+    assert.deepEqual(parseClaudeUsage({ five_hour: null, seven_day: null, limits }).windows, []);
+  }
+  for (const percent of [0, 31.5, 100]) {
+    for (const resets_at of [null, '2030-09-25T03:59:58+02:00']) {
+      assert.deepEqual(parseClaudeUsage({ five_hour: null, seven_day: null, limits: [fableLimit(percent, resets_at)] }).windows,
+        [{ kind: 'weekly_fable', used: percent, resetsAt: resets_at === null ? null : Date.parse(resets_at) }]);
+    }
+  }
+});
+test('Claude supports older Fable buckets but current usage rows take precedence, including absence', () => {
+  const legacy = { five_hour: null, seven_day: null, seven_day_overage_included: { utilization: 80, resets_at: null } };
+  for (const limits of [undefined, null]) {
+    assert.deepEqual(parseClaudeUsage({ ...legacy, limits }).windows, [{ kind: 'weekly_fable', used: 80, resetsAt: null }]);
+  }
+  assert.deepEqual(parseClaudeUsage({ ...legacy, limits: [fableLimit(20, null)] }).windows,
+    [{ kind: 'weekly_fable', used: 20, resetsAt: null }]);
+  assert.deepEqual(parseClaudeUsage({ ...legacy, limits: [] }).windows, []);
+  assert.deepEqual(parseClaudeUsage({ five_hour: null, seven_day: null, seven_day_overage_included: null }).windows, []);
+});
+test('Claude rejects malformed or duplicate Fable readings instead of inventing quota', () => {
+  const base = { five_hour: null, seven_day: null };
+  for (const percent of [-1, 101, NaN, Infinity, '31', null, undefined]) {
+    assert.throws(() => parseClaudeUsage({ ...base, limits: [{ ...fableLimit(31, null), percent }] }));
+  }
+  for (const resets_at of ['not-a-date', 123, undefined]) {
+    assert.throws(() => parseClaudeUsage({ ...base, limits: [{ ...fableLimit(31, null), resets_at }] }));
+  }
+  assert.throws(() => parseClaudeUsage({ ...base, limits: [fableLimit(10, null), fableLimit(20, null)] }), /quota_schema/);
+  assert.throws(() => parseClaudeUsage({ ...base, seven_day_overage_included: { utilization: 101, resets_at: null } }));
+});
 test('API keys cannot accidentally become subscription accounts', () => {
   assert.throws(() => parseCredentials('codex', { OPENAI_API_KEY: 'test-key' }));
   assert.throws(() => parseCredentials('claude', { apiKey: 'test-key' }));

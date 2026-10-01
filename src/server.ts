@@ -8,6 +8,7 @@ import { Engine } from './engine.js';
 import { Providers } from './providers.js';
 import { Telegram, telegramApi } from './telegram.js';
 import { createApi } from './api.js';
+import { seeAccounts } from './accounts.js';
 
 process.umask(0o077);
 const env = z.object({
@@ -30,7 +31,9 @@ async function main() {
   const webhook = await api('getWebhookInfo', {});
   if (webhook.url) throw new Error('Telegram bot must be dedicated to Acadence and have no webhook');
   const engine = new Engine(store, vault, new Providers(), config.WORKER_CONCURRENCY);
-  const telegram = new Telegram(store, api, (accountId, dedupe) => engine.refreshReminder(accountId, dedupe));
+  const telegram = new Telegram(store, api, (accountId, dedupe) => engine.refreshReminder(accountId, dedupe),
+    user => seeAccounts(store, vault, engine, user.id));
+  await telegram.registerCommands();
   const app = await createApi(store, vault, engine, bot.username, () => Date.now() - telegram.lastSuccess < 300_000);
   await app.listen({ port: config.PORT, host: '0.0.0.0' });
   console.info(`Acadence listening on port ${config.PORT}`);

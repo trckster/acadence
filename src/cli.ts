@@ -8,10 +8,11 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { anchorSchema, timezoneSchema, type Provider, type Schedule } from './domain.js';
 import { accountCategory, accountEmail, claudeAccountEmail, cleanEnvironment, parseCredentials, runProcess } from './providers.js';
-import { formatTimestamp, formatUsage, windowLabels } from './format.js';
+import { formatAccounts } from './format.js';
+import { refreshAccountViews } from './account-view.js';
 import { select } from './select.js';
 import { withSpinner } from './spinner.js';
-import { fetchWithContext, responseJson, requestTarget, RequestError, formatError, providerErrorMessage } from './errors.js';
+import { fetchWithContext, responseJson, requestTarget, RequestError, formatError } from './errors.js';
 import { updateAcadence } from './update.js';
 
 process.umask(0o077);
@@ -142,46 +143,11 @@ program.command('connect [provider]').description('Connect an account, optionall
   await connectAccount(provider, options);
 });
 async function showAccounts() {
-  const rows = await withSpinner('Loading account usage…', async () => {
-    const rows = await request('/v1/accounts');
-    for (let i = 0; i < rows.length; i += 4) {
-      await Promise.all(rows.slice(i, i + 4).map(async (row: any) => {
-        const savedLimits = row.limits ?? [];
-        row.limits = [];
-        try {
-          Object.assign(row, await request(`/v1/accounts/${encodeURIComponent(row.id)}/usage`, 'POST', {}, undefined, 120_000));
-        } catch (error) {
-          row.refreshError = formatError(error);
-        }
-        if (row.refreshError && row.status === 'active' && !['auth', 'reauthentication required'].includes(row.refreshError)) {
-          row.limits = savedLimits;
-          row.stale = true;
-        }
-      }));
-    }
-    return rows;
-  });
-  const now = Date.now();
-  if (!rows.length) { console.log('No accounts connected'); return; }
-  for (const row of rows) {
-    if (row !== rows[0]) console.log();
-    console.log(`${row.provider} / ${row.category} / ${row.email ?? 'email unavailable'}`);
-    if (row.status === 'monitoring_paused') {
-      console.log('    inactive');
-      console.log('    subscription unavailable; run acadence reauth');
-      continue;
-    }
-    console.log(`    ${row.status.replaceAll('_', ' ')}${row.lastError ? ` (${providerErrorMessage(row.lastError)})` : ''}`);
-    if (row.refreshError) console.log(`    Usage unavailable: ${providerErrorMessage(row.refreshError)}`);
-    for (const [kind, label] of Object.entries(windowLabels)) {
-      const limit = row.limits.find((item: any) => item.kind === kind);
-      if (kind === 'weekly_fable' && !limit) continue;
-      console.log(limit
-        ? `    ${formatUsage(limit, now)}${row.stale ? ` (last known; checked ${formatTimestamp(limit.sampledAt)})` : ''}`
-        : `    ${label}: usage unavailable`);
-    }
-    if (row.pending.length) console.log(`    ${row.pending.length} pending operation(s)`);
-  }
+  const rows = await withSpinner('Loading account usage…', async () => refreshAccountViews(
+    await request('/v1/accounts'),
+    row => request(`/v1/accounts/${encodeURIComponent(row.id)}/usage`, 'POST', {}, undefined, 120_000)
+  ));
+  console.log(formatAccounts(rows, Date.now()));
 }
 program.command('see').description('Fetch current usage and status for every connected account').action(showAccounts);
 async function chooseAccount(action: string) {

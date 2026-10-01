@@ -2,6 +2,25 @@ import { randomUUID } from 'node:crypto';
 import { Store, type User } from './db.js';
 import { fetchWithContext, responseJson, requestTarget, RequestError } from './errors.js';
 import { hash } from './security.js';
+import type { AccountView } from './account-view.js';
+import { formatAccounts } from './format.js';
+
+const help = 'Acadence bot commands:\n/see — Fetch current usage and status for every connected account.\n/help — Show this help.\n\nTo get started, run acadence login in your terminal and approve the sign-in here. Then run acadence connect to add an account. Manage accounts and schedules in the CLI; run acadence help for all commands.';
+
+function messageChunks(body: string): string[] {
+  const chunks: string[] = [];
+  while (body.length > 4000) {
+    let end = body.lastIndexOf('\n', 4000);
+    if (end <= 0) {
+      end = 4000;
+      if (/[\uD800-\uDBFF]/.test(body[end - 1]!)) end--;
+    } else end++;
+    chunks.push(body.slice(0, end));
+    body = body.slice(end);
+  }
+  if (body) chunks.push(body);
+  return chunks;
+}
 
 export type TelegramApi = (method: string, data: object) => Promise<any>;
 export function telegramApi(token: string): TelegramApi {
@@ -21,9 +40,42 @@ export class Telegram {
   private sending = false;
   lastSuccess = Date.now();
   constructor(readonly store: Store, readonly api: TelegramApi,
-    readonly refreshReminder?: (accountId: string, dedupe: string) => Promise<string | null>) {}
-  accept(update: any, now = Date.now()) {
+    readonly refreshReminder?: (accountId: string, dedupe: string) => Promise<string | null>,
+    readonly seeAccounts?: (user: User) => Promise<AccountView[]>) {}
+  async registerCommands() {
+    await this.api('setMyCommands', { scope: { type: 'all_private_chats' }, commands: [
+      { command: 'see', description: 'Fetch current usage and status for every connected account' },
+      { command: 'help', description: 'Show bot commands and sign-in instructions' }
+    ] });
+  }
+  async accept(update: any, now = Date.now()) {
     this.store.transaction(() => this.link(update, now));
+    const message = update.message;
+    if (message?.chat?.type !== 'private' || message.from?.is_bot || message.from?.id == null || String(message.from.id) !== String(message.chat.id)) return;
+    const match = /^\/(see|help|start)(?:@\w+)?\s*$/.exec(message.text ?? '');
+    if (!match) return;
+    const user = this.store.get<User>('SELECT * FROM users WHERE telegram_id=?', String(message.from.id));
+    const dedupe = `command:${message.chat.id}:${update.update_id ?? message.message_id ?? randomUUID()}`;
+    if (this.store.get('SELECT id FROM notifications WHERE dedupe=?', `${dedupe}:0`)) return;
+    let body = help;
+    if (match[1] === 'see') {
+      if (!user) body = 'Run acadence login in your terminal and approve the sign-in here before using /see. Then run acadence connect to add an account. Use /help for bot commands.';
+      else {
+        try {
+          if (!this.seeAccounts) throw new Error('Usage refresh unavailable');
+          body = formatAccounts(await this.seeAccounts(user), Date.now(), user.timezone);
+        } catch { body = 'Could not load account usage. Please try /see again shortly.'; }
+      }
+    }
+    const chunks = messageChunks(body);
+    if (user) this.store.transaction(() => {
+      chunks.forEach((chunk, i) => this.store.notify(user.id, null, `${dedupe}:${i}`, chunk, now));
+    });
+    else for (const chunk of chunks) {
+      // Unlinked chats have no outbox; a blocked bot must not stall everyone else's updates.
+      try { await this.api('sendMessage', { chat_id: String(message.chat.id), text: chunk }); }
+      catch {}
+    }
   }
   private link(update: any, now: number) {
     const message = update.message;
@@ -50,8 +102,8 @@ export class Telegram {
         const offset = Number(this.store.get<{ value: string }>("SELECT value FROM metadata WHERE key='telegram_offset'")?.value ?? 0);
         const updates = await this.api('getUpdates', { offset, timeout: 25, allowed_updates: ['message'] });
         for (const update of updates) {
+          await this.accept(update);
           this.store.transaction(() => {
-            this.link(update, Date.now());
             this.store.run("INSERT INTO metadata(key,value) VALUES('telegram_offset',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", String(update.update_id + 1));
           });
         }

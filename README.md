@@ -28,6 +28,8 @@ acadence see
 
 `acadence connect` walks you through choosing a service and signing in. Run `acadence help` for all commands.
 
+In a private chat with the Telegram bot, use `/see` for the same current account usage and status as `acadence see`, with timestamps in your configured timezone. Use `/help` for bot commands and sign-in instructions. Account and schedule changes stay in the CLI.
+
 Update an installed copy to the latest stable release:
 
 ```bash

@@ -10,6 +10,7 @@ import { Vault, hash, secret } from '../src/security.js';
 import { Engine } from '../src/engine.js';
 import { Telegram } from '../src/telegram.js';
 import { createApi } from '../src/api.js';
+import { seeAccounts } from '../src/accounts.js';
 import { parseClaudeUsage, ProviderError } from '../src/providers.js';
 
 async function runCli(args: string[], env: NodeJS.ProcessEnv, input = ''): Promise<string> {
@@ -72,6 +73,12 @@ test('see carries Fable usage through polling and storage, with optional rows an
     assert.match(output, /Week: 25% used/);
     assert.match(output, /Week \(Fable\): 31\.5% used; resets 2030-09-25 03:59/);
     assert.doesNotMatch(output, /last known/);
+    const messages: string[] = [];
+    const telegram = new Telegram(store, async (_method, data) => { messages.push((data as { text: string }).text); }, undefined,
+      user => seeAccounts(store, vault, engine, user.id));
+    await telegram.accept({ update_id: 1, message: { chat: { type: 'private', id: 1 }, from: { id: 1 }, text: '/see' } });
+    await telegram.send();
+    assert.equal(messages.join('') + '\n', output, 'Telegram /see and CLI see must show the same fresh account information');
     const saved = (await app.inject({ url: '/v1/accounts', headers: { authorization: `Bearer ${token}` } })).json()[0].limits;
     assert.deepEqual(saved.find((limit: any) => limit.kind === 'weekly_fable'), {
       kind: 'weekly_fable', used: 31.5, resetsAt: Date.parse(reset), sampledAt: store.get<{ sampled_at: number }>("SELECT sampled_at FROM windows WHERE kind='weekly_fable'")!.sampled_at

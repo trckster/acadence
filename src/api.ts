@@ -7,6 +7,7 @@ import { HOUR, nextScheduled, scheduleSchema, timezoneSchema } from './domain.js
 import { accountEmail, parseCredentials, type Credentials } from './providers.js';
 import { hash, secret, Vault } from './security.js';
 import { Engine } from './engine.js';
+import { listAccounts, refreshUsage } from './accounts.js';
 
 export async function createApi(store: Store, vault: Vault, engine: Engine, botUsername: string, telegramHealthy = () => true) {
   const app = Fastify({ logger: false, bodyLimit: 128 * 1024, trustProxy: (_address, hop) => hop < Number(process.env.TRUST_PROXY_HOPS ?? 0) });
@@ -78,16 +79,7 @@ export async function createApi(store: Store, vault: Vault, engine: Engine, botU
       store.run('DELETE FROM notifications WHERE account_id=? AND sent IS NULL', account.id);
     });
   }
-  app.get('/v1/accounts', async request => {
-    const user = authenticate(request.headers.authorization);
-    return store.all<Account>('SELECT * FROM accounts WHERE user_id=? ORDER BY provider,category,id', user.id).map(account => ({
-      id: account.id, provider: account.provider, category: account.category, status: account.status, lastError: account.last_error,
-      email: accountEmail(vault.open<Credentials>(account.credentials, account.id)),
-      nextSession: account.next_session, lastSuccess: account.last_success,
-      limits: store.all('SELECT kind,used,resets_at AS resetsAt,sampled_at AS sampledAt FROM windows WHERE account_id=? AND present=1', account.id),
-      pending: store.all('SELECT reason,attempts,due FROM jobs WHERE account_id=?', account.id)
-    }));
-  });
+  app.get('/v1/accounts', async request => listAccounts(store, vault, authenticate(request.headers.authorization).id));
   app.post('/v1/accounts', async request => {
     const user = authenticate(request.headers.authorization);
     const body = z.object({ provider: z.enum(['claude','codex']), category: z.enum(['personal','work']), credentials: z.unknown() }).parse(request.body);
@@ -111,20 +103,7 @@ export async function createApi(store: Store, vault: Vault, engine: Engine, botU
   });
   app.post<{ Params: { id: string } }>('/v1/accounts/:id/usage', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async request => {
     const account = owned(authenticate(request.headers.authorization), request.params.id);
-    if (account.status !== 'active') return { status: account.status, lastError: account.last_error, pending: [], limits: [], refreshError: account.status === 'monitoring_paused'
-      ? 'monitoring paused; run acadence reauth or connect again' : 'reauthentication required' };
-    const operation = await engine.runIfIdle(account.id, async () => {
-      const snapshot = await engine.poll(account, Date.now());
-      const current = owned(authenticate(request.headers.authorization), account.id);
-      return {
-        status: current.status, lastError: current.last_error,
-        email: accountEmail(vault.open<Credentials>(current.credentials, current.id)),
-        limits: snapshot?.windows ?? [],
-        pending: store.all('SELECT reason,attempts,due FROM jobs WHERE account_id=?', account.id),
-        refreshError: snapshot ? null : current.last_error ?? 'provider unavailable'
-      };
-    });
-    return operation ? operation.result : { limits: [], refreshError: 'account operation in progress; retry shortly' };
+    return refreshUsage(store, vault, engine, account, () => owned(authenticate(request.headers.authorization), account.id));
   });
   app.put<{ Params: { id: string } }>('/v1/accounts/:id', async request => {
     const account = owned(authenticate(request.headers.authorization), request.params.id);

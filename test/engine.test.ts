@@ -68,17 +68,56 @@ test('a window expiring at 10:00 reopens without waiting for the 11:00 slot in R
     assert.equal(store.all<Job>('SELECT * FROM jobs')[0]!.reason, 'expiry');
   } finally { store.close(); }
 });
-test('weekly restoration notifies and queues one opening even with an anchor nearby', () => {
+test('weekly and five-hour restoration sends one notification and queues one opening even with an anchor nearby', () => {
   const { store, account, engine } = fixture();
   const now = Date.parse('2026-09-08T12:00:00Z');
   engine.observe(account(), { windows: [{ kind: 'five_hour', used: 70, resetsAt: now + HOUR }, { kind: 'weekly', used: 80, resetsAt: now + HOUR }] }, now - HOUR);
   engine.observe(account(), { windows: [{ kind: 'five_hour', used: 0, resetsAt: now + FIVE }, { kind: 'weekly', used: 0, resetsAt: now + WEEK }] }, now);
-  assert.equal(store.all('SELECT * FROM notifications').length, 2);
+  assert.deepEqual(store.all<{ body: string }>('SELECT body FROM notifications').map(n => n.body), [
+    'codex / work / email unavailable\n🎁 Quota restored before the scheduled reset.\n5h: 100% left; resets in 5h 0m\nWeek: 100% left; resets 2026-09-15 12:00'
+  ]);
   assert.equal(store.all<Job>('SELECT * FROM jobs')[0]!.reason, 'weekly_reset');
   assert.equal(store.all('SELECT * FROM jobs').length, 1);
   engine.observe(account(), { windows: [{ kind: 'five_hour', used: 0, resetsAt: now + FIVE }, { kind: 'weekly', used: 0, resetsAt: now + WEEK }] }, now + HOUR);
-  assert.equal(store.all('SELECT * FROM notifications').length, 2);
+  assert.equal(store.all('SELECT * FROM notifications').length, 1);
   store.close();
+});
+test('one Claude reset combines all three quota buckets and a later reset still notifies', () => {
+  const { store, account, engine } = fixture();
+  try {
+    store.run("UPDATE users SET timezone='Europe/Rome'");
+    store.run("UPDATE accounts SET provider='claude',credentials=?", vault.seal({ email: 'you@example.com' }, 'a'));
+    const now = Date.parse('2026-10-13T15:40:00+02:00');
+    const weekly = Date.parse('2026-10-16T05:59:00+02:00');
+    const fable = Date.parse('2026-10-16T06:00:00+02:00');
+    engine.observe(account(), { windows: [
+      { kind: 'five_hour', used: 84, resetsAt: Date.parse('2026-10-13T15:59:00+02:00') },
+      { kind: 'weekly', used: 40, resetsAt: weekly },
+      { kind: 'weekly_fable', used: 30, resetsAt: fable }
+    ] }, now - 40 * 60_000);
+    const restored: Window[] = [
+      { kind: 'five_hour', used: 16, resetsAt: now + 269 * 60_000 },
+      { kind: 'weekly', used: 2, resetsAt: weekly },
+      { kind: 'weekly_fable', used: 0, resetsAt: fable }
+    ];
+    engine.observe(account(), { windows: restored }, now);
+    const notifications = () => store.all<{ body: string }>("SELECT body FROM notifications WHERE dedupe LIKE 'reset:%' ORDER BY id");
+    assert.deepEqual(notifications().map(n => n.body), [
+      'claude / work / you@example.com\n🎁 Quota restored before the scheduled reset.\n5h: 84% left; resets in 4h 29m\nWeek: 98% left; resets 2026-10-16 05:59\nWeek (Fable): 100% left; resets 2026-10-16 06:00'
+    ]);
+    assert.equal(store.all<Job>('SELECT * FROM jobs').length, 1);
+    assert.equal(store.get<Job>('SELECT * FROM jobs')!.reason, 'weekly_reset');
+    engine.observe(account(), { windows: [...restored].reverse() }, now + 60_000);
+    assert.equal(notifications().length, 1);
+    assert.equal(store.all<Job>('SELECT * FROM jobs').length, 1);
+    engine.observe(account(), { windows: restored.map(w => ({ ...w, used: w.used + 10 })) }, now + 2 * 60_000);
+    engine.observe(account(), { windows: restored }, now + 3 * 60_000);
+    assert.equal(notifications().length, 2);
+    assert.match(notifications()[1]!.body, /5h: 84% left/);
+    assert.match(notifications()[1]!.body, /Week: 98% left/);
+    assert.match(notifications()[1]!.body, /Week \(Fable\): 100% left/);
+    assert.equal(store.all<Job>('SELECT * FROM jobs').length, 1);
+  } finally { store.close(); }
 });
 test('Fable restoration and expiry notify independently without scheduling account openings', async () => {
   const { store, account, engine } = fixture();

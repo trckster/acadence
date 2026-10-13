@@ -50,6 +50,7 @@ export class Engine {
       let weeklyReset = false;
       let fiveReset = false;
       const resets: string[] = [];
+      const restored: string[] = [];
       this.store.run('INSERT INTO observations(account_id,sampled_at,snapshot) VALUES(?,?,?)', account.id, now, JSON.stringify(snapshot));
       const previous = this.store.all<WindowRow>('SELECT * FROM windows WHERE account_id=?', account.id);
       this.store.run('UPDATE windows SET present=0 WHERE account_id=?', account.id);
@@ -70,10 +71,14 @@ export class Engine {
         account.id, window.kind, window.used, window.resetsAt, generation, now);
         if (reset) {
           resets.push(`${window.kind}:${generation}`);
-          this.store.notify(account.user_id, account.id, `reset:${account.id}:${window.kind}:${generation}`, `${this.accountName(account)}\n🎁 Quota restored before the scheduled reset.\n${this.formatQuota(window, now, user.timezone)}`, now);
+          restored.push(this.formatQuota(window, now, user.timezone));
           if (window.kind === 'weekly') weeklyReset = true;
           else if (window.kind === 'five_hour') fiveReset = true;
         }
+      }
+      if (resets.length) {
+        this.store.notify(account.user_id, account.id, `reset:${account.id}:${resets.join(':')}`,
+          `${this.accountName(account)}\n🎁 Quota restored before the scheduled reset.\n${restored.join('\n')}`, now);
       }
       const hasFive = snapshot.windows.some(w => w.kind === 'five_hour');
       const previouslyFive = previous.some(w => w.kind === 'five_hour' && w.present);

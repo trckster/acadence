@@ -118,7 +118,8 @@ export class Telegram {
     this.sending = true;
     try {
       const pending = this.store.all<{ id: number; account_id: string | null; dedupe: string; body: string; telegram_id: string; attempts: number }>(`SELECT n.id,n.account_id,n.dedupe,n.body,n.attempts,u.telegram_id FROM notifications n
-        JOIN users u ON u.id=n.user_id WHERE n.sent IS NULL AND n.due<=? ORDER BY n.id LIMIT 20`, now);
+        JOIN users u ON u.id=n.user_id WHERE n.sent IS NULL AND n.due<=?
+        AND (n.account_id IS NULL OR u.notifications_enabled=1) ORDER BY n.id LIMIT 20`, now);
       for (const item of pending) {
         // Pausing or reconnecting can cancel queued messages while a send awaits Telegram.
         if (!this.store.get('SELECT id FROM notifications WHERE id=? AND dedupe=? AND sent IS NULL', item.id, item.dedupe)) continue;

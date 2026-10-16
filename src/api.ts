@@ -60,6 +60,16 @@ export async function createApi(store: Store, vault: Vault, engine: Engine, botU
     else store.run('DELETE FROM tokens WHERE hash=?', hash(request.headers.authorization!.slice(7)));
     return { ok: true };
   });
+  app.get('/v1/notifications', async request => ({ enabled: !!authenticate(request.headers.authorization).notifications_enabled }));
+  app.put('/v1/notifications', async request => {
+    const user = authenticate(request.headers.authorization);
+    const { enabled } = z.object({ enabled: z.boolean() }).strict().parse(request.body);
+    store.transaction(() => {
+      store.run('UPDATE users SET notifications_enabled=? WHERE id=?', Number(enabled), user.id);
+      if (!enabled) store.run('DELETE FROM notifications WHERE user_id=? AND account_id IS NOT NULL AND sent IS NULL', user.id);
+    });
+    return { enabled };
+  });
   app.get('/v1/schedule', async request => store.schedule(authenticate(request.headers.authorization)));
   app.put('/v1/schedule', async request => {
     const user = authenticate(request.headers.authorization);

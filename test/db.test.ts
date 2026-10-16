@@ -6,6 +6,29 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/db.js';
 
+test('notification preference migration defaults existing users to enabled and survives reopening', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'acadence-notifications-migration-'));
+  const path = join(dir, 'db.sqlite');
+  try {
+    const legacy = new Store(path);
+    legacy.run("INSERT INTO users(id,telegram_id,timezone) VALUES('u','1','UTC')");
+    legacy.db.exec('ALTER TABLE users DROP COLUMN notifications_enabled');
+    legacy.close();
+    const migrated = new Store(path);
+    try {
+      assert.equal(migrated.get<{ notifications_enabled: number }>("SELECT * FROM users WHERE id='u'")!.notifications_enabled, 1);
+      migrated.run("INSERT INTO users(id,telegram_id,timezone) VALUES('new','2','UTC')");
+      assert.equal(migrated.get<{ notifications_enabled: number }>("SELECT * FROM users WHERE id='new'")!.notifications_enabled, 1);
+      migrated.run("UPDATE users SET notifications_enabled=0 WHERE id='u'");
+    } finally { migrated.close(); }
+    const reopened = new Store(path);
+    try {
+      assert.equal(reopened.get<{ notifications_enabled: number }>("SELECT * FROM users WHERE id='u'")!.notifications_enabled, 0);
+      assert.deepEqual(reopened.all('PRAGMA foreign_key_check'), []);
+    } finally { reopened.close(); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test('legacy account migration preserves accounts and dependencies and removes label uniqueness', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'acadence-migration-'));
   const path = join(dir, 'db.sqlite');

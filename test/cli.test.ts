@@ -28,10 +28,10 @@ test('help commands work at every level and removed commands and flags are rejec
   assert.equal(await runCli([], process.env), help);
   const version = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
   assert.ok(help.startsWith(`Acadence ${version}\n`));
-  for (const command of ['see', 'connect', 'disconnect', 'reauth', 'update']) assert.ok(help.includes(command));
+  for (const command of ['see', 'connect', 'disconnect', 'reauth', 'update', 'notifications']) assert.ok(help.includes(command));
   assert.doesNotMatch(help, /^  accounts\b/m);
   await assert.rejects(runCli(['accounts', 'list'], process.env), /unknown command/);
-  for (const path of [[], ['see'], ['connect'], ['disconnect'], ['reauth'], ['update'], ['schedule', 'add']]) {
+  for (const path of [[], ['see'], ['connect'], ['disconnect'], ['reauth'], ['update'], ['schedule', 'add'], ['notifications'], ['notifications', 'enable'], ['notifications', 'disable'], ['notifications', 'status']]) {
     const output = await runCli(['help', ...path], process.env);
     assert.match(output, /Usage: acadence/);
     assert.doesNotMatch(output, /--help|--version|<account>|<id>/);
@@ -43,6 +43,33 @@ test('help commands work at every level and removed commands and flags are rejec
     ...[[], ['connect'], ['disconnect'], ['reauth'], ['update'], ['schedule', 'add'], ['help']].flatMap(path => ['--help', '-h'].map(flag => [...path, flag]))]) {
     await assert.rejects(runCli(args, process.env), /unknown (?:command|option)|Unknown command/);
   }
+});
+
+test('notification commands persist the shared preference through the authenticated API', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'acadence-notifications-cli-'));
+  const store = new Store(':memory:');
+  const vault = new Vault(Buffer.alloc(32, 4).toString('base64'));
+  const engine = new Engine(store, vault, { execute: async () => ({ windows: [] }) });
+  const app = await createApi(store, vault, engine, 'test_bot');
+  try {
+    const url = await app.listen({ host: '127.0.0.1', port: 0 });
+    const cli = (command: string) => runCli(['notifications', command], { ...process.env, HOME: home });
+    for (const command of ['status', 'enable', 'disable']) await assert.rejects(cli(command), /Run acadence login first/);
+    const token = secret();
+    store.run("INSERT INTO users(id,telegram_id,timezone) VALUES('owner','1','UTC')");
+    store.run('INSERT INTO tokens(hash,user_id,created,expires) VALUES(?,?,?,?)', hash(token), 'owner', Date.now(), Date.now() + 60_000);
+    const configDir = join(home, '.config', 'acadence');
+    await mkdir(configDir, { recursive: true });
+    await writeFile(join(configDir, 'client.json'), JSON.stringify({ url, token }));
+    assert.equal(await cli('status'), 'Telegram notifications: enabled\n');
+    assert.equal(await cli('disable'), 'Telegram notifications: disabled\n');
+    assert.equal(await cli('status'), 'Telegram notifications: disabled\n');
+    assert.equal(await cli('disable'), 'Telegram notifications: disabled\n');
+    assert.equal(await cli('enable'), 'Telegram notifications: enabled\n');
+    assert.equal(await cli('status'), 'Telegram notifications: enabled\n');
+    store.run('DELETE FROM tokens');
+    await assert.rejects(cli('disable'), /HTTP 401; Sign in with acadence login/);
+  } finally { await app.close(); store.close(); await rm(home, { recursive: true, force: true }); }
 });
 
 test('see carries Fable usage through polling and storage, with optional rows and saved-data labels', async () => {

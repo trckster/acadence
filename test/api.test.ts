@@ -26,6 +26,130 @@ async function fixture() {
   return { store, vault, engine, telegram, app, login, close: async () => { await app.close(); store.close(); } };
 }
 const credentials = { auth_mode: 'chatgpt', tokens: { access_token: 'access-secret', refresh_token: 'refresh-secret', id_token: `header.${Buffer.from(JSON.stringify({ email: 'test@example.com' })).toString('base64url')}.signature` } };
+test('notification preferences require authentication, validate booleans, and isolate users and sessions', async () => {
+  const f = await fixture();
+  try {
+    const url = '/v1/notifications';
+    for (const method of ['GET', 'PUT'] as const) {
+      assert.equal((await f.app.inject({ method, url, ...(method === 'PUT' ? { payload: { enabled: false } } : {}) })).statusCode, 401);
+      assert.equal((await f.app.inject({ method, url, headers: { authorization: 'Bearer invalid' }, ...(method === 'PUT' ? { payload: { enabled: false } } : {}) })).statusCode, 401);
+    }
+    const headers = await f.login(1);
+    const other = await f.login(2);
+    const read = async (auth = headers) => (await f.app.inject({ url, headers: auth })).json();
+    assert.deepEqual(await read(), { enabled: true });
+    for (const payload of [{}, { enabled: 'false' }, { enabled: 0 }, { enabled: null }, { enabled: false, user_id: 'other' }]) {
+      assert.equal((await f.app.inject({ method: 'PUT', url, headers, payload })).statusCode, 400);
+      assert.deepEqual(await read(), { enabled: true });
+    }
+    for (let i = 0; i < 2; i++) {
+      const response = await f.app.inject({ method: 'PUT', url, headers, payload: { enabled: false } });
+      assert.equal(response.statusCode, 200);
+      assert.deepEqual(response.json(), { enabled: false });
+    }
+    assert.deepEqual(await read(), { enabled: false });
+    assert.deepEqual(await read(other), { enabled: true });
+    const secondSession = await f.login(1);
+    assert.deepEqual(await read(secondSession), { enabled: false });
+    assert.equal((await f.app.inject({ method: 'PUT', url, headers: secondSession, payload: { enabled: true } })).statusCode, 200);
+    assert.deepEqual(await read(), { enabled: true });
+  } finally { await f.close(); }
+});
+
+test('disabling notifications clears only owned unsent alerts and preserves monitoring and bot replies', async () => {
+  const f = await fixture();
+  try {
+    const headers = await f.login(1);
+    const other = await f.login(2);
+    const add = async (auth: typeof headers) => (await f.app.inject({ method: 'POST', url: '/v1/accounts', headers: auth, payload: { provider: 'codex', category: 'personal', credentials } })).json().id as string;
+    const id = await add(headers);
+    const otherId = await add(other);
+    const userId = f.store.get<{ user_id: string }>('SELECT user_id FROM accounts WHERE id=?', id)!.user_id;
+    const otherUserId = f.store.get<{ user_id: string }>('SELECT user_id FROM accounts WHERE id=?', otherId)!.user_id;
+    f.store.notify(userId, id, 'sent', 'Already sent', 0);
+    f.store.run("UPDATE notifications SET sent=1 WHERE dedupe='sent'");
+    for (const dedupe of ['reset:queued', 'reminder:queued', 'paused:queued', 'error:queued']) f.store.notify(userId, id, dedupe, 'Queued', 0);
+    f.store.notify(otherUserId, otherId, 'other', 'Other user alert', 0);
+    await f.app.inject({ method: 'PUT', url: '/v1/notifications', headers, payload: { enabled: false } });
+    for (const dedupe of ['reset:muted', 'reminder:muted', 'paused:muted', 'error:muted']) {
+      f.store.notify(userId, id, dedupe, 'Muted', 0);
+    }
+    const sent: { chat_id: string; text: string }[] = [];
+    const telegram = new Telegram(f.store, async (_method, data) => { sent.push(data as typeof sent[number]); }, undefined, async () => []);
+    await telegram.accept({ update_id: 10, message: { chat: { type: 'private', id: 1 }, from: { id: 1 }, text: '/see' } });
+    await telegram.accept({ update_id: 11, message: { chat: { type: 'private', id: 1 }, from: { id: 1 }, text: '/help' } });
+    await telegram.send();
+    assert.equal(sent.filter(item => item.chat_id === '1').length, 3, 'login confirmation and both command replies are delivered while muted');
+    assert.ok(sent.some(item => item.chat_id === '1' && item.text === 'No accounts connected'));
+    assert.ok(sent.some(item => item.chat_id === '2' && item.text === 'Other user alert'));
+    assert.equal(f.store.all("SELECT * FROM notifications WHERE dedupe LIKE '%:queued' OR dedupe LIKE '%:muted'").length, 0);
+    assert.equal(f.store.get<{ sent: number }>("SELECT sent FROM notifications WHERE dedupe='sent'")!.sent, 1);
+    assert.equal((await f.app.inject({ method: 'POST', url: '/v1/trigger', headers })).json().queued, 1);
+    assert.equal(f.store.get<{ status: string }>('SELECT status FROM accounts WHERE id=?', id)!.status, 'active');
+    await f.app.inject({ method: 'PUT', url: '/v1/notifications', headers, payload: { enabled: true } });
+    f.store.notify(userId, id, 'new-alert', 'New alert', 0);
+    await telegram.send();
+    assert.equal(sent.filter(item => item.text === 'New alert').length, 1);
+  } finally { await f.close(); }
+});
+
+test('disabling notifications during dispatch cancels the remaining alerts in the selected batch', async () => {
+  const f = await fixture();
+  let release = () => {};
+  try {
+    const headers = await f.login(1);
+    await f.telegram.send();
+    const id = (await f.app.inject({ method: 'POST', url: '/v1/accounts', headers, payload: { provider: 'codex', category: 'personal', credentials } })).json().id;
+    const userId = f.store.get<{ user_id: string }>('SELECT user_id FROM accounts WHERE id=?', id)!.user_id;
+    f.store.notify(userId, id, 'first', 'Already in flight', 0);
+    f.store.notify(userId, id, 'second', 'Still queued', 0);
+    const sent: string[] = [];
+    let started = () => {};
+    const entered = new Promise<void>(resolve => { started = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const telegram = new Telegram(f.store, async (_method, data) => {
+      sent.push((data as { text: string }).text);
+      started();
+      await gate;
+    });
+    const sending = telegram.send();
+    await entered;
+    await f.app.inject({ method: 'PUT', url: '/v1/notifications', headers, payload: { enabled: false } });
+    release();
+    await sending;
+    assert.deepEqual(sent, ['Already in flight']);
+    assert.equal(f.store.all('SELECT * FROM notifications WHERE account_id=? AND sent IS NULL', id).length, 0);
+  } finally { release(); await f.close(); }
+});
+
+test('disabling notifications during reminder refresh prevents its Telegram request', async () => {
+  const f = await fixture();
+  let release = () => {};
+  try {
+    const headers = await f.login(1);
+    await f.telegram.send();
+    const id = (await f.app.inject({ method: 'POST', url: '/v1/accounts', headers, payload: { provider: 'codex', category: 'personal', credentials } })).json().id;
+    const userId = f.store.get<{ user_id: string }>('SELECT user_id FROM accounts WHERE id=?', id)!.user_id;
+    f.store.notify(userId, id, 'reminder:refreshing', 'Stale reminder', 0);
+    let calls = 0;
+    let started = () => {};
+    const entered = new Promise<void>(resolve => { started = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const telegram = new Telegram(f.store, async () => { calls++; }, async () => {
+      started();
+      await gate;
+      return 'Fresh reminder';
+    });
+    const sending = telegram.send();
+    await entered;
+    await f.app.inject({ method: 'PUT', url: '/v1/notifications', headers, payload: { enabled: false } });
+    release();
+    await sending;
+    assert.equal(calls, 0);
+    assert.equal(f.store.all('SELECT * FROM notifications WHERE account_id=?', id).length, 0);
+  } finally { release(); await f.close(); }
+});
+
 test('on-demand usage is scoped, fresh, locked against overlap, and hides stale data on failure', async () => {
   const f = await fixture();
   let release = () => {};

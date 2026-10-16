@@ -3,7 +3,7 @@ import { mkdirSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Provider, Schedule, WindowKind } from './domain.js';
 
-export type User = { id: string; telegram_id: string; timezone: string; anchors: string; schedule_version: number };
+export type User = { id: string; telegram_id: string; timezone: string; anchors: string; schedule_version: number; notifications_enabled: number };
 export type Account = { id: string; user_id: string; provider: Provider; category: 'personal' | 'work'; credentials: string; status: string; version: number; next_poll: number; next_session: number | null; failures: number; last_error: string | null; last_success: number | null };
 export type WindowRow = { account_id: string; kind: WindowKind; used: number; resets_at: number | null; generation: number; sampled_at: number; present: number };
 export type Job = { id: number; account_id: string; reason: string; dedupe: string; due: number; attempts: number; account_version: number; schedule_version: number; expires: number | null };
@@ -21,7 +21,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY, telegram_id TEXT NOT NULL UNIQUE, timezone TEXT NOT NULL,
-        anchors TEXT NOT NULL DEFAULT '[]', schedule_version INTEGER NOT NULL DEFAULT 1
+        anchors TEXT NOT NULL DEFAULT '[]', schedule_version INTEGER NOT NULL DEFAULT 1,
+        notifications_enabled INTEGER NOT NULL DEFAULT 1 CHECK(notifications_enabled IN (0,1))
       );
       CREATE TABLE IF NOT EXISTS tokens (
         hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -63,6 +64,9 @@ export class Store {
       CREATE INDEX IF NOT EXISTS notifications_due ON notifications(sent,due);
       CREATE INDEX IF NOT EXISTS observations_time ON observations(sampled_at);
     `);
+    if (!this.all<{ name: string }>('PRAGMA table_info(users)').some(column => column.name === 'notifications_enabled')) {
+      this.db.exec('ALTER TABLE users ADD COLUMN notifications_enabled INTEGER NOT NULL DEFAULT 1 CHECK(notifications_enabled IN (0,1))');
+    }
     if (this.all<{ name: string }>('PRAGMA table_info(accounts)').some(column => column.name === 'label')) {
       // Rebuild without the legacy label uniqueness constraint, preserving IDs and dependents.
       this.db.exec('PRAGMA foreign_keys=OFF');
@@ -98,7 +102,8 @@ export class Store {
   }
   schedule(user: User): Schedule { return { anchors: JSON.parse(user.anchors), timezone: user.timezone }; }
   notify(userId: string, accountId: string | null, dedupe: string, body: string, now: number) {
-    this.run('INSERT OR IGNORE INTO notifications(user_id,account_id,dedupe,body,due) VALUES(?,?,?,?,?)', userId, accountId, dedupe, body, now);
+    this.run(`INSERT OR IGNORE INTO notifications(user_id,account_id,dedupe,body,due)
+      SELECT id,?,?,?,? FROM users WHERE id=? AND (? IS NULL OR notifications_enabled=1)`, accountId, dedupe, body, now, userId, accountId);
   }
   close() { this.db.close(); }
 }

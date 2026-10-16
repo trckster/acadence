@@ -6,7 +6,7 @@ Schedule Claude Code and Codex usage windows from your terminal, with updates in
 
 - **Daily schedule** — Start usage windows automatically at your preferred times.
 - **Usage tracking** — Check current usage and reset times for each account, including Claude's separate Fable weekly allowance when available.
-- **Telegram updates** — Get notified about resets, expiring usage windows, and account issues.
+- **Telegram updates** — Get notified about resets, expiring usage windows, and account issues, with controls to enable or disable alerts.
 - **Multiple accounts** — Manage Claude Code and Codex accounts in one place.
 
 ## Get started
@@ -29,6 +29,16 @@ acadence see
 `acadence connect` walks you through choosing a service and signing in. Run `acadence help` for all commands.
 
 In a private chat with the Telegram bot, use `/see` for the same current account usage and status as `acadence see`, with timestamps in your configured timezone. Use `/help` for bot commands and sign-in instructions. Account and schedule changes stay in the CLI.
+
+Control automatic Telegram notifications from any signed-in CLI:
+
+```bash
+acadence notifications status
+acadence notifications disable
+acadence notifications enable
+```
+
+Notifications are enabled by default. This setting applies to your Acadence user across all sessions and connected accounts. Disabling discards queued automatic alerts and prevents new ones from being queued; enabling resumes alerts without replaying a backlog. Monitoring and schedules keep running, and Telegram sign-in confirmations and replies to bot commands still work.
 
 Update an installed copy to the latest stable release:
 

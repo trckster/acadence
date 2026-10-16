@@ -174,6 +174,11 @@ program.command('reauth').description('Choose an account to reauthenticate').act
     console.log('Authentication updated');
   });
 });
+const notifications = program.command('notifications').description('Manage automatic Telegram notifications');
+const displayNotifications = (value: { enabled: boolean }) => console.log(`Telegram notifications: ${value.enabled ? 'enabled' : 'disabled'}`);
+notifications.command('status').description('Show whether notifications are enabled').action(async () => displayNotifications(await request('/v1/notifications')));
+notifications.command('enable').description('Enable automatic notifications').action(async () => displayNotifications(await request('/v1/notifications', 'PUT', { enabled: true })));
+notifications.command('disable').description('Disable automatic notifications and discard queued alerts').action(async () => displayNotifications(await request('/v1/notifications', 'PUT', { enabled: false })));
 const schedule = program.command('schedule').description('Manage shared daily anchors');
 const display = (value: Schedule) => console.log(`${value.timezone}: ${value.anchors.join(', ') || 'no anchors'}`);
 schedule.command('show').action(async () => display(await request('/v1/schedule')));

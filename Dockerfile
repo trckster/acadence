@@ -1,15 +1,18 @@
-FROM node:24-bookworm-slim AS build
+FROM node:24.22.1-trixie-slim@sha256:43b9ba1142b8dcf33fa8f922ca1be85714adc444e0586c7cf7726daaeabc1bea AS base
+RUN npm install -g npm@12.2.1 && npm cache clean --force
+
+FROM base AS build
 WORKDIR /app
 COPY package*.json tsconfig.json ./
 RUN npm ci
 COPY src ./src
 RUN npm run build && npm prune --omit=dev
 
-FROM node:24-bookworm-slim
-ARG CODEX_VERSION=0.153.4
-ARG CLAUDE_VERSION=2.1.263
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git tini && rm -rf /var/lib/apt/lists/*
-RUN npm install -g @openai/codex@${CODEX_VERSION} @anthropic-ai/claude-code@${CLAUDE_VERSION} && npm cache clean --force
+FROM base
+ARG CODEX_VERSION=0.164.0
+ARG CLAUDE_VERSION=2.1.311
+RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap ca-certificates git tini && rm -rf /var/lib/apt/lists/*
+RUN npm install -g --allow-scripts=@anthropic-ai/claude-code @openai/codex@${CODEX_VERSION} @anthropic-ai/claude-code@${CLAUDE_VERSION} && npm cache clean --force
 WORKDIR /app
 COPY --from=build /app/package*.json ./
 COPY --from=build /app/node_modules ./node_modules

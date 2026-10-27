@@ -49,3 +49,23 @@ acadence update
 The command verifies the release's SHA-256 checksum and updates the global npm installation it was launched from, including custom prefixes. It requires npm and write access to that installation, keeps your sign-in and settings, and does nothing if your version is already current or newer. Source checkouts and local project installations should use the installer above first.
 
 Acadence aims to keep usage windows running throughout the day while sticking to your schedule.
+
+## Development
+
+Use the Node.js version in `.node-version` and the npm version in `package.json`'s
+`packageManager` field. CI tests Node.js 24 LTS and Node.js 26; the container and
+release workflow use the pinned Node.js 24 LTS version.
+
+```bash
+npm install --global "$(node -p "require('./package.json').packageManager")"
+npm ci
+npm run check
+npm test
+npm run build
+docker build -t acadence:local .
+bash scripts/smoke-container.sh
+```
+
+The container smoke check disables external networking and uses temporary
+credentials directories and a disposable volume to verify the provider CLIs, API, SQLite persistence, and worker
+lock. It does not require Telegram or provider credentials.
